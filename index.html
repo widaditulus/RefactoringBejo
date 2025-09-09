@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/all.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #f5f7fa; margin: 0; padding: 20px; color: #333; }
+        .container { max-width: 1200px; margin: 20px auto; }
+        .card { background: #fff; padding: 25px; border-radius: 10px; box-shadow: 0 4px 12px rgba(0,0,0,0.08); margin-bottom: 25px; }
+        .controls, .eval-controls, .tuning-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; align-items: end; }
+        .form-group { display: flex; flex-direction: column; }
+        label { font-weight: 600; margin-bottom: 8px; color: #2980b9; }
+        select, input { padding: 12px; border: 1px solid #bdc3c7; border-radius: 6px; font-size: 16px; width: 100%; box-sizing: border-box; }
+        button { padding: 14px 25px; background: #3498db; color: white; border: none; border-radius: 6px; font-size: 16px; font-weight: bold; cursor: pointer; transition: all 0.3s ease; }
+        button:disabled { background: #95a5a6; cursor: not-allowed; }
+        .refresh-btn { background: #27ae60; }
+        .refresh-btn:hover { background: #229954; }
+        .spinner { border: 5px solid #f3f3f3; border-top: 5px solid #3498db; border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite; display: inline-block; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        .error { color: #e74c3c; font-weight: bold; text-align: center; margin-top: 20px; padding: 15px; background: #fadbd8; border-radius: 6px; }
+        .table-container { overflow-x: auto; }
+        table { width: 100%; border-collapse: collapse; margin-top: 20px; font-size: 0.95em; }
+        th, td { padding: 12px; text-align: left; border-bottom: 1px solid #ecf0f1; }
+        th { background: #2c3e50; color: white; }
+        .hit { color: #27ae60; font-weight: bold; }
+        .miss { color: #e74c3c; font-weight: bold; }
+        .am-hit { color: #e74c3c; background-color: #fdd; padding: 2px 4px; border-radius: 3px; font-weight: bold; }
+        .cell-correct { background-color: #d4edda; font-weight: bold; }
+        .training-params { margin-top: 15px; padding: 12px; background-color: #f8f9fa; border-radius: 6px; border: 1px solid #e9ecef; text-align: left; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header style="text-align:center;"><h1>AI</h1><p>Sistem prediksi berbasis AI.</p></header>
+
+        <div class="card controls">
+            <div class="form-group"><label for="pasaran">Pasaran:</label><select id="pasaran"><option value="sydney">Sydney</option><option value="sgp">SGP</option><option value="hk">HK</option><option value="china">China</option><option value="magnum">Magnum</option><option value="taiwan">Taiwan</option></select></div>
+            <div class="form-group"><label for="tanggal">Tanggal Prediksi:</label><input type="date" id="tanggal"></div>
+            <button onclick="prediksiCB()">Mulai Prediksi</button>
+            
+            <button onclick="refreshData(this)" class="refresh-btn">
+                <i class="fas fa-sync-alt"></i> Muat Ulang Data
+            </button>
+            
+            <div id="data-update-info" style="grid-column: 1 / -1; font-size: 0.9em; color: #555; text-align: right; margin-top: -10px;"></div>
+        </div>
+
+        <div id="hasil" class="card" style="display: none; text-align: center;"></div>
+
+        <div class="card">
+            <h3>Manajemen Model</h3>
+            <div class="form-group"><label for="pasaran-train">Pilih Pasaran:</label><select id="pasaran-train"><option value="sydney">Sydney</option><option value="sgp">SGP</option><option value="hk">HK</option><option value="china">China</option><option value="magnum">Magnum</option><option value="taiwan">Taiwan</option></select></div>
+            <div class="tuning-panel">
+                <h4>Panel Kontrol Tuning (Neural Network)</h4>
+                <div class="tuning-grid">
+                    <div class="form-group"><label for="tuning-lr">Learning Rate</label><input type="number" id="tuning-lr" step="0.0001" value="0.001"></div>
+                    <div class="form-group"><label for="tuning-epochs">Epochs</label><input type="number" id="tuning-epochs" step="10" value="100"></div>
+                    <div class="form-group"><label for="tuning-h1">Neuron Layer 1</label><input type="number" id="tuning-h1" step="4" value="32"></div>
+                    <div class="form-group"><label for="tuning-h2">Neuron Layer 2</label><input type="number" id="tuning-h2" step="4" value="16"></div>
+                    <div class="form-group"><label for="tuning-patience">Patience</label><input type="number" id="tuning-patience" step="1" value="15"></div>
+                </div>
+            </div>
+            <div id="training-status" style="text-align: center; margin-top: 15px;"></div>
+            <div style="margin-top: 15px;"><button id="latih-button" onclick="latihModelTerpilih()">Latih Model Baru</button></div>
+        </div>
+
+        <div class="card evaluasi-kinerja">
+            <h2>Evaluasi Kinerja Model</h2>
+            <div class="eval-controls">
+                <div class="form-group"><label for="pasaran-eval">Pasaran:</label><select id="pasaran-eval"><option value="sydney">Sydney</option><option value="sgp">SGP</option><option value="hk">HK</option><option value="china">China</option><option value="magnum">Magnum</option><option value="taiwan">Taiwan</option></select></div>
+                <div class="form-group"><label for="tgl-awal">Dari Tanggal:</label><input type="date" id="tgl-awal"></div>
+                <div class="form-group"><label for="tgl-akhir">Sampai Tanggal:</label><input type="date" id="tgl-akhir"></div>
+                <button onclick="evalKinerja()">Jalankan Evaluasi</button>
+            </div>
+            <div id="hasil-evaluasi" class="hasil-evaluasi"></div>
+        </div>
+    </div>
+    <script src="/static/main_refactored.js"></script>
+</body>
+</html>
