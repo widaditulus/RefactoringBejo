@@ -119,9 +119,20 @@ async function evalKinerja() {
     try {
         const result = await callApi('/evaluate', 'POST', { pasaran, tgl_awal, tgl_akhir });
         const summaryHTML = renderSummary(result.summary);
-        const matrixHTML = renderConfusionMatrix(result.confusion_matrix);
-        const detailsHTML = renderDetails(result.daily_details);
-        hasilDiv.innerHTML = `<h4>Ringkasan Akurasi</h4>${summaryHTML}<h4 style="margin-top:30px;">Matriks Konfusi</h4>${matrixHTML}<h4 style="margin-top:30px;">Detail Per Hari</h4>${detailsHTML}`;
+        // Pastikan confusion_matrix ada sebelum dirender
+        const matrixHTML = result.confusion_matrix ? renderConfusionMatrix(result.confusion_matrix) : '';
+        // Cek jika daily_details ada dan tidak kosong
+        const detailsHTML = result.daily_details && result.daily_details.length > 0 ? renderDetails(result.daily_details) : '';
+        
+        let finalHTML = `<h4>Ringkasan Akurasi</h4>${summaryHTML}`;
+        if (matrixHTML) {
+            finalHTML += `<h4 style="margin-top:30px;">Matriks Konfusi</h4>${matrixHTML}`;
+        }
+        if (detailsHTML) {
+            finalHTML += `<h4 style="margin-top:30px;">Detail Per Hari</h4>${detailsHTML}`;
+        }
+        hasilDiv.innerHTML = finalHTML;
+
     } catch (error) {
         hasilDiv.innerHTML = `<p class="error">${error.message}</p>`;
     } finally {

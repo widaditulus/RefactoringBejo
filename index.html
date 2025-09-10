@@ -34,8 +34,6 @@
         .am-hit { color: #e74c3c; background-color: #fdd; padding: 2px 4px; border-radius: 3px; font-weight: bold; }
         .cell-correct { background-color: #d4edda; font-weight: bold; }
         code { background-color: #eef; padding: 2px 5px; border-radius: 4px; font-family: monospace; }
-
-        /* Styling for dropdown guide */
         details { margin-top: 25px; border: 1px solid #ecf0f1; border-radius: 6px; }
         summary { cursor: pointer; padding: 12px; font-weight: bold; color: #3498db; background-color: #f8f9fa; border-radius: 6px; }
         summary:hover { background-color: #e9ecef; }
@@ -103,27 +101,27 @@
                 </div>
 
                 <details>
-                    <summary>Tampilkan/Sembunyikan Panduan Tuning Model 🎛️</summary>
+                    <summary>Tampilkan/Sembunyikan Panduan Tuning Model</summary>
                     <div class="tuning-guide">
-                        <h5>📚 Learning Rate (Tingkat Pembelajaran)</h5>
+                        <h5>Learning Rate (Tingkat Pembelajaran)</h5>
                         <p><b>Analogi:</b> Seberapa besar "langkah" yang diambil model saat belajar. Ini mengontrol seberapa drastis model mengubah pengetahuannya (bobot) setelah melihat data.<br>
                         - <b>Terlalu tinggi</b> (misal: <code>0.01</code>): Model belajar terlalu cepat, "melompati" solusi terbaik dan kinerjanya tidak stabil.<br>
                         - <b>Terlalu rendah</b> (misal: <code>0.0001</code>): Model belajar terlalu lambat, butuh waktu sangat lama.<br>
                         - <b>Saran:</b> Nilai default (<code>0.001</code>) adalah titik awal yang baik. Ubah secara perlahan jika diperlukan.</p>
 
-                        <h5>🔄 Epochs (Epoch)</h5>
+                        <h5>Epochs (Epoch)</h5>
                         <p><b>Analogi:</b> Berapa kali seorang murid membaca ulang keseluruhan buku pelajaran. Ini adalah jumlah total pengulangan proses pelatihan pada seluruh data historis.<br>
                         - <b>Terlalu banyak:</b> Model bisa terlalu hafal data (*overfitting*) dan waktu pelatihan menjadi sangat lama.<br>
                         - <b>Terlalu sedikit:</b> Model belum cukup belajar dan pemahamannya belum matang (*underfitting*).<br>
                         - <b>Saran:</b> Karena model baru ini lebih efisien, nilai antara <b>80-150</b> biasanya sudah cukup.</p>
 
-                        <h5>🏗️ Neuron Layer 1 & 2</h5>
+                        <h5>Neuron Layer 1 & 2</h5>
                         <p><b>Analogi:</b> Kapasitas dan kompleksitas "otak" model. Lapisan 1 mempelajari pola dasar, Lapisan 2 mempelajari kombinasi pola dari lapisan pertama.<br>
                         - <b>Lebih banyak neuron:</b> Mampu mempelajari pola rumit, tapi rentan *overfitting* dan memperlambat training.<br>
                         - <b>Lebih sedikit neuron:</b> Training lebih cepat, tapi mungkin tidak cukup kuat untuk data yang kompleks.<br>
                         - <b>Saran:</b> Ubah jika Anda merasa model secara fundamental kurang atau terlalu kuat untuk data suatu pasaran.</p>
 
-                        <h5>🧘 Patience (Kesabaran)</h5>
+                        <h5>Patience (Kesabaran)</h5>
                         <p><b>Analogi:</b> Kesabaran seorang guru sebelum menghentikan pelajaran jika nilai muridnya tidak membaik. Ini menghentikan pelatihan secara otomatis jika kinerja model tidak menunjukkan perbaikan setelah beberapa epoch.<br>
                         - Nilai <code>15</code> berarti: "Jika setelah <b>15 epoch berturut-turut</b> akurasi tidak membaik, hentikan pelatihan."<br>
                         - <b>Saran:</b> Jika pelatihan berhenti terlalu dini, <b>naikkan</b> nilainya (misal ke <code>25</code>). Jika ingin proses berhenti lebih cepat saat stagnan, <b>turunkan</b> (misal ke <code>10</code>).</p>
@@ -161,6 +159,6 @@
             <div id="hasil-evaluasi" style="margin-top: 20px;"></div>
         </div>
     </div>
-    <script src="/static/main_refactored.js"></script>
+    <script src="/main_refactored.js"></script>
 </body>
 </html>
