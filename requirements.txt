@@ -9,3 +9,4 @@ waitress
 gunicorn
 python-dotenv
 Flask-SQLAlchemy==3.0.5
+scipy
