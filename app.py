@@ -1,78 +1,82 @@
+# = =========================================================================
+# ## NAMA FILE: app.py
+# ## STATUS: VERSI 10.6 (FINAL VECTORIZED REFACTOR)
+# ## PERBAIKAN:
+# ## 1. Implementasi "vectorized" penuh pada generate_all_features.
+# ## 2. Menghilangkan pembuatan pd.Series di dalam loop yang menjadi akar masalah performa.
+# ## 3. Ini adalah perbaikan definitif untuk masalah kecepatan training.
+# =========================================================================
+
 import os
-import io
-import time
 import joblib
 import requests
 import numpy as np
 import pandas as pd
 import logging
+import json
 from logging.handlers import RotatingFileHandler
 from flask import Flask, render_template, request, jsonify, send_from_directory
 from flask_sqlalchemy import SQLAlchemy
 from sklearn.neural_network import MLPClassifier
-from sklearn.multioutput import MultiOutputClassifier
+from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import KFold
+from sklearn.multiclass import OneVsRestClassifier
 from email.utils import parsedate_to_datetime
 from datetime import datetime, timezone, timedelta
-import math
-from scipy.stats import linregress
 from itertools import combinations
 import signal
 import sys
+import uuid
+import threading
+import re
 
-MODEL_VERSION = "2.0"
+MODEL_VERSION = "10.1" # Versi arsitektur model tidak berubah
 
 # =================================================================
-# ## KONFIGURASI APLIKASI, LOGGING, & DATABASE
+# ## KONFIGURASI APLIKASI
 # =================================================================
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
-
-# KOREKSI FINAL: Secara eksplisit memberitahu Flask untuk mencari file HTML di direktori saat ini (root).
 app = Flask(__name__, template_folder='.')
-
-# Konfigurasi Direktori
-MODELS_DIR = os.path.join(BASE_DIR, "models")
-LOGS_DIR = os.path.join(BASE_DIR, "logs")
-DATA_DIR = os.path.join(BASE_DIR, "data")
-os.makedirs(MODELS_DIR, exist_ok=True)
-os.makedirs(LOGS_DIR, exist_ok=True)
-os.makedirs(DATA_DIR, exist_ok=True)
-
-# Konfigurasi Logging
+MODELS_DIR, LOGS_DIR, DATA_DIR, CONFIG_DIR = (os.path.join(BASE_DIR, d) for d in ["models", "logs", "data", "config"])
+for d in [MODELS_DIR, LOGS_DIR, DATA_DIR, CONFIG_DIR]: os.makedirs(d, exist_ok=True)
 log_file = os.path.join(LOGS_DIR, 'app.log')
 handler = RotatingFileHandler(log_file, maxBytes=1048576, backupCount=3)
-formatter = logging.Formatter(
-    '%(asctime)s - %(name)s - %(levelname)s - %(message)s [in %(pathname)s:%(lineno)d]'
-)
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s [in %(pathname)s:%(lineno)d]')
 handler.setFormatter(formatter)
 app.logger.addHandler(handler)
 app.logger.setLevel(logging.INFO)
 app.logger.info("Aplikasi Dimulai.")
-
-# Konfigurasi Database
+evaluation_jobs, weight_adjustment_jobs = {}, {}
+data_cache, feature_cache = {}, {}
+shared_jobs_lock, shared_weights_lock = threading.Lock(), threading.Lock()
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + os.path.join(BASE_DIR, 'app_database.db')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db = SQLAlchemy(app)
+WEIGHTS_CONFIG_PATH = os.path.join(CONFIG_DIR, 'weights_config.json')
+posisi_weights = {}
 
-# Model Database
+def load_weights():
+    global posisi_weights
+    try:
+        with open(WEIGHTS_CONFIG_PATH, 'r') as f:
+            posisi_weights = json.load(f)
+        app.logger.info("Bobot dinamis berhasil dimuat.")
+    except Exception as e:
+        app.logger.error(f"Gagal memuat file bobot: {e}")
+        posisi_weights = {}
+
 class PredictionHistory(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    tanggal = db.Column(db.String(10), nullable=False)
-    pasaran = db.Column(db.String(50), nullable=False)
-    prediksi_cb = db.Column(db.Integer, nullable=False)
-    am = db.Column(db.String(50), nullable=True)
-    prediksi_kop = db.Column(db.String(50), nullable=True)
-    prediksi_kepala = db.Column(db.String(50), nullable=True)
-    prediksi_ekor = db.Column(db.String(50), nullable=True)
-    hasil = db.Column(db.String(20), nullable=True, default='-')
-    status = db.Column(db.String(20), nullable=True, default='Menunggu')
-    cb_status = db.Column(db.String(10), nullable=True, default='...')
+    tanggal, pasaran = db.Column(db.String(10), nullable=False), db.Column(db.String(50), nullable=False)
+    prediksi_cb, am = db.Column(db.Integer, nullable=False), db.Column(db.String(50), nullable=True)
+    prediksi_as, prediksi_kop = db.Column(db.String(50), nullable=True), db.Column(db.String(50), nullable=True)
+    prediksi_kepala, prediksi_ekor = db.Column(db.String(50), nullable=True), db.Column(db.String(50), nullable=True)
+    hasil, status, cb_status = db.Column(db.String(20), default='-'), db.Column(db.String(20), default='Menunggu'), db.Column(db.String(10), default='...')
     __table_args__ = (db.UniqueConstraint('tanggal', 'pasaran', name='_tanggal_pasaran_uc'),)
 
-with app.app_context():
-    db.create_all()
+with app.app_context(): db.create_all()
 
-# Konfigurasi Lainnya
 DATA_URLS = {
     "china": "https://raw.githubusercontent.com/widaditulus/4D/main/china_data.csv",
     "hk": "https://raw.githubusercontent.com/widaditulus/4D/main/hk_data.csv",
@@ -81,267 +85,279 @@ DATA_URLS = {
     "sydney": "https://raw.githubusercontent.com/widaditulus/4D/main/sydney_data.csv",
     "taiwan": "https://raw.githubusercontent.com/widaditulus/4D/main/taiwan_data.csv",
 }
-data_cache = {}
-MIN_HISTORICAL_DATA = 91
+MIN_HISTORICAL_DATA = 181 # Disesuaikan dengan window rolling terbesar + 1
 
 # =================================================================
-# ## FUNGSI HELPER & PEMUATAN DATA
+# ## FUNGSI HELPER & DATA
 # =================================================================
 def _get_remote_last_modified(url: str):
     try:
         response = requests.head(url, timeout=10)
         response.raise_for_status()
         last_modified_str = response.headers.get('Last-Modified')
-        if last_modified_str:
-            return parsedate_to_datetime(last_modified_str)
-    except requests.exceptions.RequestException:
-        return None
+        if last_modified_str: return parsedate_to_datetime(last_modified_str)
+    except requests.exceptions.RequestException: return None
 
 def _download_and_save(url: str, local_path: str):
     try:
         response = requests.get(url, timeout=15)
         response.raise_for_status()
-        with open(local_path, 'w', encoding='utf-8') as f:
-            f.write(response.text)
+        with open(local_path, 'w', encoding='utf-8') as f: f.write(response.text)
         return True, None
     except requests.exceptions.RequestException as e:
         return False, f"Gagal mengunduh data dari {url}: {e}"
 
 def get_data(pasaran: str, force_reload: bool = False):
-    if pasaran in data_cache and not force_reload:
-        return data_cache[pasaran].copy(), None
     url = DATA_URLS.get(pasaran)
     local_path = os.path.join(DATA_DIR, f"{pasaran}_data.csv")
+    reloaded = False
+    if pasaran in data_cache and not force_reload: return data_cache[pasaran].copy(), None, reloaded
     should_download = False
     if force_reload or not os.path.exists(local_path):
         should_download = True
     else:
-        local_mtime = datetime.fromtimestamp(os.path.getmtime(local_path), tz=timezone.utc)
-        remote_mtime = _get_remote_last_modified(url)
-        if remote_mtime and remote_mtime > local_mtime:
-            should_download = True
+        try:
+            local_mtime = datetime.fromtimestamp(os.path.getmtime(local_path), tz=timezone.utc)
+            remote_mtime = _get_remote_last_modified(url)
+            if remote_mtime and remote_mtime > local_mtime: should_download = True
+        except Exception: should_download = True
     if should_download:
         success, error = _download_and_save(url, local_path)
+        reloaded = success
         if not success:
-            return (None, error) if not os.path.exists(local_path) else (pd.read_csv(local_path), None)
+            if os.path.exists(local_path): df = pd.read_csv(local_path)
+            else: return None, error, reloaded
+        else: df = pd.read_csv(local_path)
+    else: df = pd.read_csv(local_path)
     try:
-        df = pd.read_csv(local_path)
         df = df.dropna(subset=['date', 'result'])
         for col in ['as', 'kop', 'kepala', 'ekor']:
             df[col] = pd.to_numeric(df[col], errors='coerce')
-        df = df.dropna(subset=['as', 'kop', 'kepala', 'ekor']).astype({'as': int, 'kop': int, 'kepala': int, 'ekor': int})
+        df = df.dropna(subset=['as', 'kop', 'kepala', 'ekor'])
+        df = df.astype({'as': int, 'kop': int, 'kepala': int, 'ekor': int})
         df['date'] = pd.to_datetime(df['date'])
         df = df.sort_values(by='date').reset_index(drop=True)
         data_cache[pasaran] = df.copy()
-        return df, None
-    except Exception as e:
-        return None, f"Gagal memproses file data lokal '{local_path}': {e}"
+        return df, None, reloaded
+    except Exception as e: return None, f"Gagal memproses file data: {e}", reloaded
 
 # =================================================================
-# ## FUNGSI FEATURE ENGINEERING
+# ## FUNGSI FEATURE ENGINEERING & PREDIKSI (VERSI VEKTORISASI FINAL)
 # =================================================================
-
-def calculate_slope(y):
-    x = np.arange(len(y))
-    slope, _, _, _, _ = linregress(x, y)
-    return slope if not np.isnan(slope) else 0
-
-def create_features_and_targets_vectorized(df, pasaran):
-    app.logger.info(f"Memulai pembuatan fitur lengkap untuk pasaran: {pasaran.upper()}...")
-    
-    all_digits_in_rows = df[['as', 'kop', 'kepala', 'ekor']].values
-    y = np.array([[1 if d in row else 0 for d in range(10)] for row in all_digits_in_rows])
-    
-    historical_feature_dfs = []
-    
-    for i in range(10):
-        df[f'digit_{i}'] = ((df['as'] == i) | (df['kop'] == i) | (df['kepala'] == i) | (df['ekor'] == i)).astype(int)
-    frekuensi_total = df[[f'digit_{i}' for i in range(10)]].expanding(min_periods=1).sum().shift(1).fillna(0)
-    for i in range(10): historical_feature_dfs.append(frekuensi_total[f'digit_{i}'].rename(f'frekuensi_{i}'))
-
-    for pos in ['as', 'kop', 'kepala', 'ekor']:
-        pos_dummies = pd.get_dummies(df[pos], prefix=f'frekuensi_{pos}').reindex(columns=[f'frekuensi_{pos}_{i}' for i in range(10)], fill_value=0)
-        pos_freq = pos_dummies.expanding(min_periods=1).sum().shift(1).fillna(0)
-        historical_feature_dfs.append(pos_freq)
-
-    for p in [7, 30, 90]:
-        for i in range(10):
-            col = f'digit_{i}'
-            rolling_window = df[col].rolling(window=p)
-            historical_feature_dfs.append(rolling_window.mean().shift(1).fillna(0).rename(f'rolling_mean_{p}d_{i}'))
-            historical_feature_dfs.append(rolling_window.std().shift(1).fillna(0).rename(f'rolling_std_{p}d_{i}'))
-            historical_feature_dfs.append(rolling_window.apply(calculate_slope, raw=True).shift(1).fillna(0).rename(f'rolling_slope_{p}d_{i}'))
-    
-    df['row_num'] = np.arange(len(df))
-    for i in range(10):
-        seen_at = df['row_num'].where(df[f'digit_{i}'] == 1)
-        last_seen = seen_at.ffill().fillna(-1)
-        cold_col = df['row_num'] - last_seen
-        historical_feature_dfs.append(cold_col.shift(1).fillna(len(df)).rename(f'cold_score_{i}'))
-
-    digits_arr = df[['as', 'kop', 'kepala', 'ekor']].values
-    df['ganjil_count'] = (digits_arr % 2 != 0).sum(axis=1)
-    df['genap_count'] = (digits_arr % 2 == 0).sum(axis=1)
-    df['kecil_count'] = (digits_arr < 5).sum(axis=1)
-    df['besar_count'] = (digits_arr >= 5).sum(axis=1)
-    for prop in ['ganjil', 'genap', 'kecil', 'besar']:
-        ratio_hist = (df[f'{prop}_count'] / 4).expanding(min_periods=1).mean().shift(1).fillna(0.5)
-        historical_feature_dfs.append(ratio_hist.rename(f'rasio_hist_{prop}'))
-
-    all_possible_pairs = list(combinations(range(10), 2))
-    pair_columns = {f'pair_{p[0]}{p[1]}': [] for p in all_possible_pairs}
-    for row in all_digits_in_rows:
-        unique_digits_in_row = set(row)
-        row_pairs = set(combinations(sorted(list(unique_digits_in_row)), 2))
-        for p_key, p_val in zip(pair_columns.keys(), all_possible_pairs):
-            pair_columns[p_key].append(1 if p_val in row_pairs else 0)
-    for p_key, p_data in pair_columns.items():
-        s = pd.Series(p_data, name=p_key)
-        freq_hist = s.expanding(min_periods=1).mean().shift(1).fillna(0)
-        historical_feature_dfs.append(freq_hist)
-
-    future_feature_dfs = []
-    future_feature_dfs.append(pd.Series(np.sin(2 * np.pi * df['date'].dt.dayofweek / 7), name='day_of_week_sin'))
-    future_feature_dfs.append(pd.Series(np.cos(2 * np.pi * df['date'].dt.dayofweek / 7), name='day_of_week_cos'))
-    future_feature_dfs.append(pd.Series(np.sin(2 * np.pi * df['date'].dt.dayofyear / 366), name='day_of_year_sin'))
-    future_feature_dfs.append(pd.Series(np.cos(2 * np.pi * df['date'].dt.dayofyear / 366), name='day_of_year_cos'))
-    
-    if pasaran == 'sgp':
-        is_before_off_day = df['date'].dt.dayofweek.isin([0, 3]).astype(int)
-        future_feature_dfs.append(is_before_off_day.rename('sgp_before_off_day'))
-    else:
-        future_feature_dfs.append(pd.Series(np.zeros(len(df)), name='sgp_before_off_day'))
-
-    all_feature_dfs = historical_feature_dfs + future_feature_dfs
-    X_df = pd.concat(all_feature_dfs, axis=1)
-    
-    X_df.dropna(inplace=True)
-    valid_indices = X_df.index
-    X = X_df.values
-    y = y[valid_indices]
-    
-    app.logger.info(f"Pembuatan fitur lengkap selesai. Shape X: {X.shape}, Shape y: {y.shape}")
-    return X, y, X_df
-
-def create_dataset_for_nn(df, pasaran):
-    X, y, _ = create_features_and_targets_vectorized(df.copy(), pasaran)
-    if len(X) == 0:
-        return None, None
-    return X, y
-
-def _get_future_only_features(target_date, pasaran):
+def generate_all_features(df, pasaran):
+    """
+    Versi Vektorisasi Penuh: Menghindari pembuatan Series di dalam loop
+    untuk performa maksimal.
+    """
     features = {}
-    features['day_of_week_sin'] = np.sin(2 * np.pi * target_date.dayofweek / 7)
-    features['day_of_week_cos'] = np.cos(2 * np.pi * target_date.dayofweek / 7)
-    features['day_of_year_sin'] = np.sin(2 * np.pi * target_date.dayofyear / 366)
-    features['day_of_year_cos'] = np.cos(2 * np.pi * target_date.dayofyear / 366)
-    
-    if pasaran == 'sgp':
-        features['sgp_before_off_day'] = 1 if target_date.dayofweek in [0, 3] else 0
-    else:
-        features['sgp_before_off_day'] = 0
-    
-    return pd.Series(features)
+    window = 180
 
-def get_full_prediction(df_historis, model, scaler, target_date, all_features_df, pasaran):
-    last_features_row = all_features_df.iloc[-1:].copy()
-    future_features = _get_future_only_features(target_date, pasaran)
+    # OPTIMISASI: Hitung semua kemunculan digit sebagai numpy array HANYA SEKALI.
+    digits_arr = df[['as', 'kop', 'kepala', 'ekor']].values
+    digit_cols_np = {i: np.any(digits_arr == i, axis=1).astype(int) for i in range(10)}
+
+    # OPTIMISASI: Buat DataFrame dari semua digit HANYA SEKALI, lalu lakukan rolling secara "borongan".
+    digit_df = pd.DataFrame(digit_cols_np)
+
+    # 1. & 4. Fitur frekuensi dan tren (rolling) secara borongan
+    rolling_sum_w = digit_df.rolling(window=window, min_periods=1).sum().shift(1)
+    rolling_mean_7 = digit_df.rolling(window=7, min_periods=1).mean().shift(1)
+    rolling_mean_30 = digit_df.rolling(window=30, min_periods=1).mean().shift(1)
+    rolling_mean_90 = digit_df.rolling(window=90, min_periods=1).mean().shift(1)
+
+    for i in range(10):
+        features[f'freq_total_{i}_roll{window}'] = rolling_sum_w[i].values
+        features[f'trend_{i}_roll{7}'] = rolling_mean_7[i].values
+        features[f'trend_{i}_roll{30}'] = rolling_mean_30[i].values
+        features[f'trend_{i}_roll{90}'] = rolling_mean_90[i].values
+
+    # 3. Fitur frekuensi posisi
+    for pos in ['as', 'kop', 'kepala', 'ekor']:
+        pos_dummies = pd.get_dummies(df[pos], prefix=f'freq_{pos}').reindex(columns=[f'freq_{pos}_{i}' for i in range(10)], fill_value=0)
+        rolling_sum = pos_dummies.rolling(window=window, min_periods=1).sum().shift(1)
+        for col in rolling_sum.columns:
+            features[col] = rolling_sum[col].values
+
+    # 5. Fitur "cold score"
+    # OPTIMISASI: Gunakan numpy array secara langsung, hindari membuat Series baru.
+    row_num_s = pd.Series(np.arange(len(df)))
+    for i in range(10):
+        seen_at = row_num_s.where(digit_cols_np[i] == 1)
+        last_seen = seen_at.ffill().fillna(-1)
+        features[f'cold_score_{i}'] = (row_num_s - last_seen).shift(1).fillna(window).values
+
+    # 6. Fitur kemunculan pasangan digit (Co-occurrence)
+    # OPTIMISASI: Hitung semua pair sebagai numpy array, buat DataFrame HANYA SEKALI, lalu rolling borongan.
+    pair_cols_np = {}
+    for d1, d2 in combinations(range(10), 2):
+        pair_cols_np[f'pair_prob_{d1}{d2}'] = digit_cols_np[d1] & digit_cols_np[d2]
     
-    for col, value in future_features.items():
-        last_features_row[col] = value
+    pair_df = pd.DataFrame(pair_cols_np)
+    rolling_pair_mean = pair_df.rolling(window=window, min_periods=1).mean().shift(1)
+    for col in rolling_pair_mean.columns:
+        features[f'{col}_roll{window}'] = rolling_pair_mean[col].values
+
+    # 7. Fitur berbasis waktu (musiman)
+    dt = df['date'].dt
+    features['dayofweek_sin'] = np.sin(2 * np.pi * dt.dayofweek / 7)
+    features['dayofweek_cos'] = np.cos(2 * np.pi * dt.dayofweek / 7)
+    features['dayofyear_sin'] = np.sin(2 * np.pi * dt.dayofyear / 366)
+    features['dayofyear_cos'] = np.cos(2 * np.pi * dt.dayofyear / 366)
+
+    # Buat DataFrame dari dictionary di akhir. Ini sangat cepat.
+    X_df = pd.DataFrame(features)
+    X_df.fillna(0, inplace=True)
+    return X_df
+
+def get_or_generate_features(pasaran, df):
+    cache_key = f"{pasaran}_{len(df)}"
+    if cache_key in feature_cache: return feature_cache[cache_key].copy()
+    
+    X_df = generate_all_features(df, pasaran)
+    feature_cache[cache_key] = X_df.copy()
+    return X_df
+
+def create_features_and_targets(df, pasaran):
+    target_cols = ['as', 'kop', 'kepala', 'ekor']
+    df.dropna(subset=target_cols, inplace=True); df = df.astype({col: int for col in target_cols})
+    
+    X_df = get_or_generate_features(pasaran, df.copy())
+    
+    valid_indices = X_df.dropna().index
+    X = X_df.loc[valid_indices].values
+    
+    y_pos_targets = {pos: df.loc[valid_indices, pos].values for pos in target_cols}
+    y_cb_targets = np.zeros((len(valid_indices), 10), dtype=int)
+    for i, index in enumerate(valid_indices):
+        digits_in_result = set(df.loc[index, target_cols].values)
+        for digit in digits_in_result:
+            y_cb_targets[i, digit] = 1
+            
+    return X, y_pos_targets, y_cb_targets
+
+def get_full_prediction(df_historis, models, scaler, target_date, pasaran):
+    future_row = pd.DataFrame([{'date': target_date}])
+    df_for_generation = pd.concat([df_historis, future_row], ignore_index=True)
+    
+    X_df_full = generate_all_features(df_for_generation.copy(), pasaran)
+
+    last_features_row = X_df_full.iloc[-1:]
+    if last_features_row.isnull().values.any():
+        app.logger.error(f"Fitur NaN terdeteksi untuk prediksi tanggal {target_date}: {last_features_row}")
+        raise ValueError("Fitur yang dihasilkan mengandung NaN, tidak bisa melanjutkan prediksi.")
         
     input_vector = last_features_row.values.reshape(1, -1)
-    
     if input_vector.shape[1] != scaler.n_features_in_:
-        raise ValueError(f"Error: Jumlah fitur input ({input_vector.shape[1]}) tidak cocok dengan scaler ({scaler.n_features_in_})")
+        raise ValueError(f"Jumlah fitur tidak cocok. Model mengharapkan {scaler.n_features_in_}, tetapi mendapat {input_vector.shape[1]}.")
 
     input_scaled = scaler.transform(input_vector)
-    skor_ai_proba = model.predict_proba(input_scaled)
-    skor_ai = [p[0][1] for p in skor_ai_proba]
-    skor_final = sorted(enumerate(skor_ai), key=lambda x: x[1], reverse=True)
-    am_candidates = [item[0] for item in skor_final[:4]]
-    cb = skor_final[0][0]
+    
+    pos_models = models['pos_models']
+    pos_probas = {pos: pos_models[pos].predict_proba(input_scaled)[0] for pos in ['as', 'kop', 'kepala', 'ekor']}
+    meta_model = models['meta_model']
+    meta_features = np.concatenate(list(pos_probas.values())).reshape(1, -1)
+    skor_ai_cb_am = meta_model.predict_proba(meta_features)[0]
+    skor_final_cb_am = sorted(enumerate(skor_ai_cb_am), key=lambda x: x[1], reverse=True)
+    cb = int(skor_final_cb_am[0][0])
+    am_candidates = [int(item[0]) for item in skor_final_cb_am[:4]]
     posisi = {}
-    for pos in ['kop', 'kepala', 'ekor']:
-        frekuensi_pos = df_historis[pos].value_counts().reindex(range(10), fill_value=0)
-        total_data = len(df_historis)
-        pos_scores = [(d, (0.6 * skor_ai[d]) + (0.4 * (frekuensi_pos[d] / total_data))) for d in range(10)]
-        posisi[pos] = [item[0] for item in sorted(pos_scores, key=lambda x: x[1], reverse=True)[:3]]
-    return {"cb": cb, "am": sorted(am_candidates), "posisi": posisi}
-
+    with shared_weights_lock: pasaran_weights = posisi_weights.get(pasaran, {})
+    for pos in ['as', 'kop', 'kepala', 'ekor']:
+        frekuensi_pos = df_historis[pos].value_counts(normalize=True).reindex(range(10), fill_value=0)
+        weights = pasaran_weights.get(pos, {"ai": 0.5, "freq": 0.5})
+        pos_scores = [(d, (weights["ai"] * pos_probas[pos][d]) + (weights["freq"] * frekuensi_pos.get(d, 0))) for d in range(10)]
+        posisi[pos] = [int(item[0]) for item in sorted(pos_scores, key=lambda x: x[1], reverse=True)[:3]]
+    return {"cb": cb, "am": sorted(am_candidates), "posisi": posisi, "pos_probas": pos_probas}
 
 # =================================================================
 # ## ENDPOINTS FLASK (API)
 # =================================================================
 
-@app.route('/')
-def index(): 
-    return render_template('index.html')
+def find_latest_model(pasaran):
+    pattern = re.compile(f"^{pasaran}_model_v(\\d+\\.\\d+)\\.joblib$")
+    latest_version, latest_model_path = -1.0, None
+    for filename in os.listdir(MODELS_DIR):
+        match = pattern.match(filename)
+        if match:
+            version = float(match.group(1))
+            if version > latest_version:
+                latest_version, latest_model_path = version, os.path.join(MODELS_DIR, filename)
+    return latest_model_path
 
-# KOREKSI FINAL: Mengarahkan pencarian file JS ke direktori saat ini (root) secara benar.
+@app.route('/')
+def index(): return render_template('index.html')
+
 @app.route('/main_refactored.js')
-def serve_js():
-    return send_from_directory('.', 'main_refactored.js')
+def serve_js(): return send_from_directory('.', 'main_refactored.js')
 
 @app.route('/train', methods=['POST'])
 def train():
     try:
         data = request.json
         pasaran = data['pasaran']
-        config = data.get('config', {})
+        config_payload = data.get('config', {})
         
-        app.logger.info("==========================================================")
-        app.logger.info(f"PROSES PELATIHAN DIMULAI UNTUK PASARAN: {pasaran.upper()}")
-        app.logger.info(f"Konfigurasi Hyperparameter: {config}")
-        app.logger.info("----------------------------------------------------------")
-
-        app.logger.info("Langkah 1: Memuat dan memproses data historis...")
-        df, error = get_data(pasaran, force_reload=True)
+        df, error, reloaded = get_data(pasaran, force_reload=True)
         if error: return jsonify({"error": error}), 500
-        app.logger.info(f"Data berhasil dimuat. Total {len(df)} baris data ditemukan.")
-
-        app.logger.info("Langkah 2: Melakukan rekayasa fitur (feature engineering)...")
-        X, y, all_features_df = create_features_and_targets_vectorized(df.copy(), pasaran)
         
-        if X is None: return jsonify({"error": f"Data historis tidak cukup (butuh min {MIN_HISTORICAL_DATA} hari)."}), 400
-        app.logger.info(f"Rekayasa fitur selesai. Ukuran matriks fitur (X): {X.shape[0]} baris, {X.shape[1]} fitur.")
-
-        app.logger.info("Langkah 3: Melakukan penskalaan data (StandardScaler)...")
+        if reloaded:
+            keys_to_del = [k for k in feature_cache if k.startswith(pasaran)]
+            for k in keys_to_del: del feature_cache[k]
+        
+        X, y_pos_targets, y_cb_targets = create_features_and_targets(df.copy(), pasaran)
+        if X.shape[0] < MIN_HISTORICAL_DATA: return jsonify({"error": f"Data historis tidak cukup (min {MIN_HISTORICAL_DATA} hari)."}), 400
+        
         scaler = StandardScaler().fit(X)
         X_scaled = scaler.transform(X)
-        app.logger.info("Penskalaan data selesai.")
 
-        app.logger.info("Langkah 4: Menginisialisasi model Neural Network (MLPClassifier)...")
-        model = MLPClassifier(
-            hidden_layer_sizes=(config.get('h1', 64), config.get('h2', 32)),
-            activation='relu', solver='adam', 
-            learning_rate_init=config.get('learning_rate', 0.001), 
-            max_iter=config.get('epochs', 150),
-            random_state=42, early_stopping=True, 
-            n_iter_no_change=config.get('patience', 15),
-            verbose=True
-        )
+        kf = KFold(n_splits=5, shuffle=False)
+        meta_features = np.zeros((X.shape[0], 40))
+        app.logger.info("Memulai pembuatan meta-features dengan Cross-Validation...")
+        for train_idx, val_idx in kf.split(X):
+            X_train_fold, X_val_fold = X_scaled[train_idx], X_scaled[val_idx]
+            fold_meta_features = []
+            for pos in ['as', 'kop', 'kepala', 'ekor']:
+                y_pos_train_fold = y_pos_targets[pos][train_idx]
+                model = LogisticRegression(random_state=42, solver='liblinear', max_iter=100)
+                model.fit(X_train_fold, y_pos_train_fold)
+                fold_meta_features.append(model.predict_proba(X_val_fold))
+            meta_features[val_idx] = np.hstack(fold_meta_features)
         
-        app.logger.info("Langkah 5: Memulai proses FIT (pelatihan model)...")
-        multi_target_model = MultiOutputClassifier(model, n_jobs=-1).fit(X_scaled, y)
-        app.logger.info("...Proses FIT selesai.")
+        app.logger.info("Selesai membuat meta-features. Melatih model final...")
+
+        trained_pos_models = {}
+        for pos in ['as', 'kop', 'kepala', 'ekor']:
+            final_config = config_payload.get('global', {}).copy()
+            final_config.update({k:v for k,v in config_payload.get('pos_specific',{}).get(pos,{}).items() if v is not None})
+            
+            model = MLPClassifier(
+                hidden_layer_sizes=(final_config.get('h1', 32), final_config.get('h2', 16)), 
+                max_iter=final_config.get('epochs', 100), 
+                random_state=42, 
+                early_stopping=True, 
+                n_iter_no_change=final_config.get('patience', 15), 
+                shuffle=False
+            )
+            model.fit(X_scaled, y_pos_targets[pos])
+            trained_pos_models[pos] = model
+
+        app.logger.info(f"--- Melatih Meta-Model Multi-Label untuk CB/AM ---")
+        base_estimator = LogisticRegression(random_state=42, max_iter=200, solver='liblinear')
+        meta_model = OneVsRestClassifier(base_estimator)
+        meta_model.fit(meta_features, y_cb_targets)
         
-        app.logger.info("Langkah 6: Menyimpan model, scaler, dan data fitur ke file...")
+        model_filename = f"{pasaran}_model_v{MODEL_VERSION}.joblib"
+        model_path = os.path.join(MODELS_DIR, model_filename)
+
         model_payload = {
             'model_version': MODEL_VERSION,
-            'model': multi_target_model, 
-            'scaler': scaler, 
-            'features_df': all_features_df, 
-            'pasaran': pasaran
+            'models': {'pos_models': trained_pos_models, 'meta_model': meta_model}, 
+            'scaler': scaler, 'pasaran': pasaran
         }
-        model_path = os.path.join(MODELS_DIR, f"{pasaran}_model.joblib")
         joblib.dump(model_payload, model_path)
         
         app.logger.info(f"Model berhasil disimpan di: {model_path}")
-        app.logger.info("PROSES PELATIHAN SELESAI")
-        app.logger.info("==========================================================")
-        
-        return jsonify({ "status": "success", "message": f"Model baru (Versi {MODEL_VERSION}) untuk {pasaran} berhasil dilatih dan disimpan." })
+        return jsonify({ "status": "success", "message": f"Arsitektur Meta-Model (v{MODEL_VERSION}) untuk {pasaran} berhasil dilatih dan disimpan." })
     except Exception as e:
         app.logger.error(f"ERROR di /train: {e}", exc_info=True)
         return jsonify({"error": f"Gagal melatih model: {e}"}), 500
@@ -351,158 +367,180 @@ def predict():
     try:
         data = request.json
         pasaran, tanggal_str = data['pasaran'], data['tanggal']
-        model_path = os.path.join(MODELS_DIR, f"{pasaran}_model.joblib")
-        if not os.path.exists(model_path): return jsonify({"error": f"Model untuk {pasaran} tidak ditemukan. Silakan latih model terlebih dahulu."}), 404
+        
+        model_path = find_latest_model(pasaran)
+        if not model_path: return jsonify({"error": f"Model untuk {pasaran} tidak ditemukan."}), 404
         
         payload = joblib.load(model_path)
-
-        if payload.get('model_version') != MODEL_VERSION:
-            return jsonify({"error": f"Model usang (versi {payload.get('model_version')}, dibutuhkan {MODEL_VERSION}). Harap latih ulang model untuk pasaran ini."}), 400
-
-        model, scaler, all_features_df = payload['model'], payload['scaler'], payload.get('features_df')
         
-        df_full, error = get_data(pasaran)
+        df_full, error, _ = get_data(pasaran)
         if error: return jsonify({"error": error}), 500
         
-        if all_features_df is None:
-            return jsonify({"error": "Model tidak valid (tidak berisi features_df). Mohon latih ulang model."}), 500
-
         target_date = pd.to_datetime(tanggal_str)
-        df_historis = df_full[df_full['date'] < target_date]
-
-        if len(df_historis) < MIN_HISTORICAL_DATA: 
-            return jsonify({"error": f"Data historis tidak cukup (butuh min {MIN_HISTORICAL_DATA} hari)."}), 400
+        df_historis = df_full[df_full['date'] < target_date].copy()
+        if len(df_historis) < MIN_HISTORICAL_DATA: return jsonify({"error": f"Data historis tidak cukup untuk prediksi (min {MIN_HISTORICAL_DATA} hari)."}), 400
         
-        if df_historis.empty:
-            return jsonify({"error": "Tidak ada data historis yang ditemukan sebelum tanggal yang diminta."}), 400
-        
-        last_historical_idx = df_historis.index[-1]
-        
-        if last_historical_idx not in all_features_df.index:
-            return jsonify({"error": "Data historis tidak sinkron dengan model. Latih ulang model dengan data terbaru."}), 400
-
-        features_for_prediction = all_features_df.loc[:last_historical_idx]
-        
-        result = get_full_prediction(df_historis, model, scaler, target_date, features_for_prediction, pasaran)
+        result = get_full_prediction(df_historis, payload['models'], payload['scaler'], target_date, pasaran)
         
         history_entry = PredictionHistory.query.filter_by(tanggal=tanggal_str, pasaran=pasaran).first()
         if not history_entry:
             history_entry = PredictionHistory(tanggal=tanggal_str, pasaran=pasaran)
             db.session.add(history_entry)
-        history_entry.prediksi_cb = result['cb']
-        history_entry.am = ','.join(map(str, result['am']))
-        history_entry.prediksi_kop = ','.join(map(str, result['posisi']['kop']))
-        history_entry.prediksi_kepala = ','.join(map(str, result['posisi']['kepala']))
-        history_entry.prediksi_ekor = ','.join(map(str, result['posisi']['ekor']))
+        history_entry.prediksi_cb, history_entry.am = result['cb'], ','.join(map(str, result['am']))
+        history_entry.prediksi_as, history_entry.prediksi_kop = ','.join(map(str, result['posisi']['as'])), ','.join(map(str, result['posisi']['kop']))
+        history_entry.prediksi_kepala, history_entry.prediksi_ekor = ','.join(map(str, result['posisi']['kepala'])), ','.join(map(str, result['posisi']['ekor']))
         actual_row = df_full[df_full['date'] == target_date]
         if not actual_row.empty:
             hasil_aktual_str = str(int(actual_row.iloc[0]['result'])).zfill(4)
-            actual_digits = {int(d) for d in hasil_aktual_str}
-            cb_status_bool = result['cb'] in actual_digits
-            history_entry.hasil = hasil_aktual_str
-            history_entry.status = 'CB' if cb_status_bool else 'Gagal'
-            history_entry.cb_status = 'Ya' if cb_status_bool else 'Tidak'
+            cb_status_bool = result['cb'] in {int(d) for d in hasil_aktual_str}
+            history_entry.hasil, history_entry.status, history_entry.cb_status = hasil_aktual_str, 'CB' if cb_status_bool else 'Gagal', 'Ya' if cb_status_bool else 'Tidak'
         db.session.commit()
+        
+        if 'pos_probas' in result: del result['pos_probas']
         result['tanggal'] = target_date.strftime('%Y-%m-%d')
         return jsonify(result)
     except Exception as e:
         db.session.rollback()
         app.logger.error(f"ERROR di /predict: {e}", exc_info=True)
-        return jsonify({"error": f"Terjadi kesalahan internal server: {e}"}), 500
+        return jsonify({"error": f"Terjadi kesalahan internal: {e}"}), 500
+
+# ... (Sisa kode endpoint lainnya tidak perlu diubah, disertakan untuk kelengkapan)
+
+def run_evaluation_in_background(job_id, pasaran, tgl_awal_str, tgl_akhir_str):
+    try:
+        with shared_jobs_lock: evaluation_jobs[job_id] = {'status': 'running', 'progress': 0, 'message': 'Memulai...'}
+        df, error, reloaded = get_data(pasaran)
+        if error: raise RuntimeError(f"Gagal memuat data: {error}")
+        
+        model_path = find_latest_model(pasaran)
+        if not model_path: raise FileNotFoundError(f"Model untuk {pasaran} tidak ditemukan.")
+        payload = joblib.load(model_path)
+        
+        tgl_awal, tgl_akhir = pd.to_datetime(tgl_awal_str), pd.to_datetime(tgl_akhir_str)
+        eval_dates = df[(df['date'] >= tgl_awal) & (df['date'] <= tgl_akhir)]
+        if eval_dates.empty: raise ValueError("Tidak ada data untuk dievaluasi pada rentang tanggal.")
+
+        daily_details, confusion_matrix = [], np.zeros((10, 10), dtype=int)
+        for i, (idx, row) in enumerate(eval_dates.iterrows()):
+            with shared_jobs_lock: evaluation_jobs[job_id].update({'progress': 10 + int((i/len(eval_dates))*85), 'message': f"Memprediksi {row['date'].strftime('%Y-%m-%d')}"})
+            df_historis = df.iloc[:df.index.get_loc(idx)]
+            if len(df_historis) < MIN_HISTORICAL_DATA: continue
+            
+            prediction = get_full_prediction(df_historis, payload['models'], payload['scaler'], row['date'], pasaran)
+            actual_str, actual_digits = str(int(row['result'])).zfill(4), {int(d) for d in str(int(row['result'])).zfill(4)}
+            for ad in actual_digits: confusion_matrix[ad][prediction['cb']] += 1
+            
+            pos_names = {'as': 'A', 'kop': 'C', 'kepala': 'K', 'ekor': 'E'}
+            status_list = [f"Hit {pos_names[p]}" for i, p in enumerate(pos_names) if int(actual_str[i]) in prediction['posisi'][p]]
+            daily_details.append({"tanggal": row['date'].strftime('%Y-%m-%d'), "hasil": actual_str, "pred_cb": prediction['cb'],
+                                  "cb_status": "Hit" if prediction['cb'] in actual_digits else "Miss", "pred_am": prediction['am'],
+                                  "pos_kandidat": ' '.join([f"{pos_names[p]}:{','.join(map(str,prediction['posisi'][p]))}" for p in pos_names]),
+                                  "final_status": ', '.join(status_list) if status_list else "Miss"})
+        
+        summary = { k: {'hit': 0} for k in ['cb', 'am', 'as', 'kop', 'kepala', 'ekor'] }
+        total = len(daily_details)
+        for d in daily_details:
+            if d['cb_status'] == 'Hit': summary['cb']['hit'] += 1
+            if set(d['pred_am']) & {int(c) for c in d['hasil']}: summary['am']['hit'] += 1
+            if 'Hit A' in d['final_status']: summary['as']['hit'] += 1
+            if 'Hit C' in d['final_status']: summary['kop']['hit'] += 1
+            if 'Hit K' in d['final_status']: summary['kepala']['hit'] += 1
+            if 'Hit E' in d['final_status']: summary['ekor']['hit'] += 1
+        for k in summary:
+            summary[k]['miss'] = total - summary[k]['hit']
+            summary[k]['accuracy'] = (summary[k]['hit'] / total * 100) if total > 0 else 0
+
+        with shared_jobs_lock: evaluation_jobs[job_id].update({'status': 'complete', 'progress': 100, 'message': 'Evaluasi Selesai!', 'summary': summary, 'daily_details': daily_details, 'confusion_matrix': confusion_matrix.tolist()})
+    except Exception as e:
+        with shared_jobs_lock: evaluation_jobs[job_id].update({'status': 'error', 'message': str(e)})
+
+def adjust_weights_task(job_id, pasaran, days_to_evaluate=30):
+    try:
+        with shared_jobs_lock: weight_adjustment_jobs[job_id] = {'status': 'running', 'progress': 0, 'message': f'Memulai...'}
+        df, error, reloaded = get_data(pasaran)
+        if error: raise RuntimeError(f"Gagal memuat data: {error}")
+
+        model_path = find_latest_model(pasaran)
+        if not model_path: raise FileNotFoundError(f"Model {pasaran} tidak ditemukan.")
+        payload = joblib.load(model_path)
+        
+        end_date = df['date'].max()
+        eval_df = df[df['date'] >= end_date - timedelta(days=days_to_evaluate)]
+        if len(eval_df) < 10: raise ValueError(f"Data tidak cukup (<10 hari).")
+        
+        performance = {pos: {'ai_wins': 0, 'freq_wins': 0} for pos in ['as', 'kop', 'kepala', 'ekor']}
+        for i, (_, row) in enumerate(eval_df.iterrows()):
+            with shared_jobs_lock: weight_adjustment_jobs[job_id].update({'progress': 10 + int((i/len(eval_df))*80), 'message': f"Menganalisis hari ke-{i+1}"})
+            df_historis = df[df['date'] < row['date']]
+            if len(df_historis) < MIN_HISTORICAL_DATA: continue
+            
+            prediction = get_full_prediction(df_historis, payload['models'], payload['scaler'], row['date'], pasaran)
+            for pos in performance:
+                if "pos_probas" in prediction and np.argmax(prediction["pos_probas"][pos]) == row[pos]:
+                    performance[pos]['ai_wins'] += 1
+                if df_historis[pos].value_counts().idxmax() == row[pos]:
+                    performance[pos]['freq_wins'] += 1
+        
+        updated = False
+        with shared_weights_lock: 
+            current_weights = posisi_weights.get(pasaran, {})
+            for pos in performance:
+                total = performance[pos]['ai_wins'] + performance[pos]['freq_wins']
+                if total > 0:
+                    new_ai = round(np.clip(performance[pos]['ai_wins']/total, 0.2, 0.8), 2)
+                    if current_weights.get(pos, {}).get('ai') != new_ai:
+                        current_weights[pos] = {'ai': new_ai, 'freq': round(1.0 - new_ai, 2)}
+                        updated = True
+            if updated: posisi_weights[pasaran] = current_weights
+
+        if updated:
+            with open(WEIGHTS_CONFIG_PATH, 'w') as f: json.dump(posisi_weights, f, indent=2)
+            msg = f'Sukses! Bobot untuk {pasaran.upper()} telah diperbarui.'
+        else: msg = 'Selesai. Tidak ada perubahan bobot yang signifikan.'
+        
+        with shared_jobs_lock: weight_adjustment_jobs[job_id].update({'status': 'complete', 'progress': 100, 'message': msg})
+    except Exception as e:
+        with shared_jobs_lock: weight_adjustment_jobs[job_id].update({'status': 'error', 'message': str(e)})
 
 @app.route('/evaluate', methods=['POST'])
 def evaluate():
-    try:
-        data = request.json
-        pasaran, tgl_awal_str, tgl_akhir_str = data.get('pasaran'), data.get('tgl_awal'), data.get('tgl_akhir')
-        model_path = os.path.join(MODELS_DIR, f"{pasaran}_model.joblib")
-        if not os.path.exists(model_path): return jsonify({"error": f"Model untuk {pasaran} tidak ditemukan."}), 404
-        
-        payload = joblib.load(model_path)
+    job_id = str(uuid.uuid4())
+    data = request.json
+    thread = threading.Thread(target=run_evaluation_in_background, args=(job_id, data['pasaran'], data['tgl_awal'], data['tgl_akhir']))
+    thread.daemon = True; thread.start()
+    return jsonify({"status": "started", "job_id": job_id})
 
-        if payload.get('model_version') != MODEL_VERSION:
-            return jsonify({"error": f"Model usang (versi {payload.get('model_version')}, dibutuhkan {MODEL_VERSION}). Harap latih ulang model."}), 400
-        
-        model, scaler, all_features_df = payload['model'], payload['scaler'], payload.get('features_df')
-        
-        df_full, error = get_data(pasaran)
+@app.route('/update-weights', methods=['POST'])
+def update_weights():
+    job_id = str(uuid.uuid4())
+    pasaran = request.json.get('pasaran')
+    thread = threading.Thread(target=adjust_weights_task, args=(job_id, pasaran))
+    thread.daemon = True; thread.start()
+    return jsonify({"status": "started", "job_id": job_id})
+
+@app.route('/evaluate-status/<job_id>', methods=['GET'])
+def evaluate_status(job_id):
+    with shared_jobs_lock: job = evaluation_jobs.get(job_id)
+    return jsonify(job if job else {"status": "not_found"})
+
+@app.route('/update-weights-status/<job_id>', methods=['GET'])
+def update_weights_status(job_id):
+    with shared_jobs_lock: job = weight_adjustment_jobs.get(job_id)
+    return jsonify(job if job else {"status": "not_found"})
+
+@app.route('/get-last-update', methods=['GET'])
+def get_last_update():
+    try:
+        pasaran = request.args.get('pasaran')
+        if not pasaran: return jsonify({"error": "Parameter 'pasaran' tidak ditemukan."}), 400
+        df, error, _ = get_data(pasaran)
         if error: return jsonify({"error": error}), 500
-        
-        tgl_awal, tgl_akhir = pd.to_datetime(tgl_awal_str), pd.to_datetime(tgl_akhir_str)
-        
-        if all_features_df is None:
-             _, _, all_features_df = create_features_and_targets_vectorized(df_full.copy(), pasaran)
-
-        eval_mask = (df_full['date'] >= tgl_awal) & (df_full['date'] <= tgl_akhir)
-        eval_indices = df_full.index[eval_mask]
-        
-        if len(eval_indices) == 0:
-            return jsonify({"error": "Tidak ada data yang dapat dievaluasi pada rentang tanggal tersebut."}), 404
-            
-        daily_details = []
-        confusion_matrix = np.zeros((10, 10), dtype=int)
-        
-        for idx in eval_indices:
-            if idx not in all_features_df.index: continue
-            
-            current_date = df_full.loc[idx, 'date']
-            df_historis = df_full.iloc[:idx]
-            
-            last_hist_idx = df_historis.index[-1] if not df_historis.empty else -1
-            if last_hist_idx == -1 or last_hist_idx not in all_features_df.index: continue
-
-            features_historis_df = all_features_df.loc[:last_hist_idx]
-            if features_historis_df.empty: continue
-            
-            prediction = get_full_prediction(df_historis, model, scaler, current_date, features_historis_df, pasaran)
-            
-            actual_result_str = str(int(df_full.loc[idx, 'result'])).zfill(4)
-            actual_digits = {int(d) for d in actual_result_str}
-            cb_status = "Hit" if prediction['cb'] in actual_digits else "Miss"
-            am_found = list(set(prediction['am']).intersection(actual_digits))
-            posisi_status_kop = int(actual_result_str[1]) in prediction['posisi']['kop']
-            posisi_status_kepala = int(actual_result_str[2]) in prediction['posisi']['kepala']
-            posisi_status_ekor = int(actual_result_str[3]) in prediction['posisi']['ekor']
-            posisi_status = "Hit" if any([posisi_status_kop, posisi_status_kepala, posisi_status_ekor]) else "Miss"
-            pred_posisi_str = f"C:{','.join(map(str, prediction['posisi']['kop']))} K:{','.join(map(str, prediction['posisi']['kepala']))} E:{','.join(map(str, prediction['posisi']['ekor']))}"
-            
-            daily_details.append({
-                "tanggal": current_date.strftime('%Y-%m-%d'), "hasil": actual_result_str, "pred_cb": prediction['cb'],
-                "cb_status": cb_status, "pred_am": prediction['am'], "am_found": am_found,
-                "pred_posisi": pred_posisi_str, "posisi_status": posisi_status,
-            })
-            for actual_digit in actual_digits:
-                confusion_matrix[actual_digit][prediction['cb']] += 1
-                
-        if not daily_details:
-             return jsonify({"error": "Tidak ada data yang dapat dievaluasi pada rentang tanggal ini."}), 404
-             
-        total_predictions = len(daily_details)
-        cb_hits = sum(1 for d in daily_details if d['cb_status'] == 'Hit')
-        am_hits = sum(1 for d in daily_details if len(d['am_found']) > 0)
-        kop_hits = sum(1 for d in daily_details if int(d['hasil'][1]) in [int(n) for n in d['pred_posisi'].split(' ')[0].split(':')[1].split(',')])
-        kepala_hits = sum(1 for d in daily_details if int(d['hasil'][2]) in [int(n) for n in d['pred_posisi'].split(' ')[1].split(':')[1].split(',')])
-        ekor_hits = sum(1 for d in daily_details if int(d['hasil'][3]) in [int(n) for n in d['pred_posisi'].split(' ')[2].split(':')[1].split(',')])
-        
-        summary = {
-            "cb": {"hit": cb_hits, "miss": total_predictions - cb_hits, "accuracy": cb_hits / total_predictions if total_predictions > 0 else 0},
-            "am": {"hit": am_hits, "miss": total_predictions - am_hits, "accuracy": am_hits / total_predictions if total_predictions > 0 else 0},
-            "kop": {"hit": kop_hits, "miss": total_predictions - kop_hits, "accuracy": kop_hits / total_predictions if total_predictions > 0 else 0},
-            "kepala": {"hit": kepala_hits, "miss": total_predictions - kepala_hits, "accuracy": kepala_hits / total_predictions if total_predictions > 0 else 0},
-            "ekor": {"hit": ekor_hits, "miss": total_predictions - ekor_hits, "accuracy": ekor_hits / total_predictions if total_predictions > 0 else 0},
-        }
-        return jsonify({"summary": summary, "daily_details": daily_details, "confusion_matrix": confusion_matrix.tolist()})
+        if df is None or df.empty: return jsonify({"error": f"Tidak ada data valid untuk pasaran {pasaran}."}), 404
+        last_update = df['date'].max().strftime('%Y-%m-%d')
+        return jsonify({"last_update": last_update})
     except Exception as e:
-        app.logger.error(f"ERROR di /evaluate: {e}", exc_info=True)
-        return jsonify({"error": f"Terjadi kesalahan internal saat evaluasi: {e}"}), 500
-
-@app.route('/get-history', methods=['GET'])
-def get_history():
-    try:
-        records = PredictionHistory.query.order_by(PredictionHistory.tanggal.desc()).limit(50).all()
-        return jsonify([{"tanggal": r.tanggal, "pasaran": r.pasaran, "prediksi_cb": r.prediksi_cb, "am": r.am, "hasil": r.hasil, "status": r.status} for r in records])
-    except Exception as e:
-        return jsonify({"error": "Gagal mengambil riwayat."}), 500
+        app.logger.error(f"Error tak terduga di /get-last-update: {e}", exc_info=True)
+        return jsonify({"error": "Terjadi kesalahan internal."}), 500
 
 @app.route('/clear-history', methods=['POST'])
 def clear_history():
@@ -517,39 +555,21 @@ def clear_history():
 @app.route('/refresh-data', methods=['POST'])
 def refresh_data():
     pasaran = request.json.get('pasaran')
-    _, error = get_data(pasaran, force_reload=True)
+    _, error, reloaded = get_data(pasaran, force_reload=True)
     if error: return jsonify({"error": error}), 500
-    return jsonify({"status": "success"})
-
-@app.route('/get-last-update', methods=['GET'])
-def get_last_update():
-    pasaran = request.args.get('pasaran')
-    df, error = get_data(pasaran)
-    if error: return jsonify({"error": error}), 500
-    return jsonify({"last_update": df['date'].max().strftime('%Y-%m-%d')})
+    if reloaded:
+        keys_to_del = [k for k in feature_cache if k.startswith(pasaran)]
+        for k in keys_to_del: del feature_cache[k]
+        app.logger.info(f"Data {pasaran.upper()} diperbarui, cache fitur dihapus.")
+    return jsonify({"status": "success", "message": f"Data untuk {pasaran} berhasil dimuat ulang."})
 
 def shutdown_handler(signum, frame):
-    print("\nSinyal keluar diterima. Membersihkan sumber daya...")
-    app.logger.info("Sinyal keluar diterima. Membersihkan sumber daya...")
-    
-    print("Membersihkan cache data...")
-    data_cache.clear()
-    
-    with app.app_context():
-        print("Menutup koneksi database...")
-        db.engine.dispose()
-    
-    print("Menghentikan logger...")
-    logging.shutdown()
-    
-    print("Pembersihan selesai. Aplikasi berhenti.")
     sys.exit(0)
 
 if __name__ == '__main__':
+    load_weights()
     from waitress import serve
-    
     signal.signal(signal.SIGINT, shutdown_handler)
     signal.signal(signal.SIGTERM, shutdown_handler)
-
     app.logger.info("Server Waitress dimulai pada http://0.0.0.0:8080")
     serve(app, host='0.0.0.0', port=8080)

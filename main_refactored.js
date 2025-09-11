@@ -7,7 +7,6 @@ document.addEventListener("DOMContentLoaded", () => {
     document.getElementById("tgl-awal").value = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
     document.getElementById("tgl-akhir").value = today;
     
-    // Panggil fungsi ini saat halaman dimuat
     tampilkanInfoUpdateData();
     document.getElementById('pasaran').addEventListener('change', tampilkanInfoUpdateData);
 });
@@ -17,9 +16,17 @@ async function callApi(endpoint, method = 'POST', body = null) {
     if (body) options.body = JSON.stringify(body);
     try {
         const response = await fetch(endpoint, options);
-        const result = await response.json();
-        if (!response.ok) throw new Error(result.error || `Server error: ${response.statusText}`);
-        return result;
+        if (!response.ok) {
+            let errorText = `Server error: ${response.status} ${response.statusText}`;
+            try {
+                const result = await response.json();
+                errorText = result.error || errorText;
+            } catch (e) {
+                // Abaikan jika respons bukan JSON
+            }
+            throw new Error(errorText);
+        }
+        return await response.json();
     } catch (error) {
         console.error(`Kesalahan pada endpoint ${endpoint}:`, error);
         throw error;
@@ -40,6 +47,7 @@ async function prediksiCB() {
         const result = await callApi('/predict', 'POST', { pasaran, tanggal });
         const amString = result.am.join(', ');
         const posisiHTML = `
+            <p><strong>As:</strong> ${result.posisi.as.join(', ')}</p>
             <p><strong>Kop:</strong> ${result.posisi.kop.join(', ')}</p>
             <p><strong>Kepala:</strong> ${result.posisi.kepala.join(', ')}</p>
             <p><strong>Ekor:</strong> ${result.posisi.ekor.join(', ')}</p>`;
@@ -62,8 +70,8 @@ async function refreshData(buttonElement) {
     buttonElement.innerHTML = '<i class="fas fa-sync-alt fa-spin"></i> Memuat...';
 
     try {
-        await callApi('/refresh-data', 'POST', { pasaran });
-        alert(`Data untuk pasaran ${pasaran.toUpperCase()} telah berhasil dimuat ulang dari server.`);
+        const result = await callApi('/refresh-data', 'POST', { pasaran });
+        alert(result.message || `Data untuk pasaran ${pasaran.toUpperCase()} telah berhasil dimuat ulang.`);
         await tampilkanInfoUpdateData(); 
     } catch (error) {
         alert(`Gagal memuat ulang data: ${error.message}`);
@@ -75,20 +83,47 @@ async function refreshData(buttonElement) {
 
 async function latihModelTerpilih() {
     const pasaran = document.getElementById('pasaran-train').value;
+    const button = document.getElementById('latih-button');
+
+    // Mencegah klik ganda seketika
+    if (button.disabled) {
+        return; // Hentikan jika tombol sudah nonaktif
+    }
+    
     if (!confirm(`Anda yakin ingin melatih model baru untuk ${pasaran}? Ini akan memakan waktu.`)) return;
 
     const statusDiv = document.getElementById('training-status');
-    const button = document.getElementById('latih-button');
+    
+    const getConfigValues = (idPrefix) => {
+        const lr = document.getElementById(`tuning-lr-${idPrefix}`).value;
+        const epochs = document.getElementById(`tuning-epochs-${idPrefix}`).value;
+        const h1 = document.getElementById(`tuning-h1-${idPrefix}`).value;
+        const h2 = document.getElementById(`tuning-h2-${idPrefix}`).value;
+        const patience = document.getElementById(`tuning-patience-${idPrefix}`).value;
+        
+        const config = {};
+        // Hanya tambahkan jika nilainya ada, untuk menghindari mengirim string kosong
+        if (lr) config.learning_rate = parseFloat(lr);
+        if (epochs) config.epochs = parseInt(epochs, 10);
+        if (h1) config.h1 = parseInt(h1, 10);
+        if (h2) config.h2 = parseInt(h2, 10);
+        if (patience) config.patience = parseInt(patience, 10);
+        return config;
+    };
+
     const config = {
-        learning_rate: parseFloat(document.getElementById('tuning-lr').value),
-        epochs: parseInt(document.getElementById('tuning-epochs').value, 10),
-        h1: parseInt(document.getElementById('tuning-h1').value, 10),
-        h2: parseInt(document.getElementById('tuning-h2').value, 10),
-        patience: parseInt(document.getElementById('tuning-patience').value, 10)
+        global: getConfigValues('global'),
+        pos_specific: {
+            as: getConfigValues('as'),
+            kop: getConfigValues('kop'),
+            kepala: getConfigValues('kepala'),
+            ekor: getConfigValues('ekor')
+        }
     };
     
     button.disabled = true;
-    statusDiv.innerHTML = `<div class="spinner"></div><p>Melatih model di server...</p>`;
+    button.style.cursor = 'not-allowed'; // Umpan balik visual langsung
+    statusDiv.innerHTML = `<div class="spinner"></div><p>Melatih model di server (bisa memakan waktu beberapa menit)...</p>`;
 
     try {
         const result = await callApi('/train', 'POST', { pasaran, config });
@@ -98,14 +133,231 @@ async function latihModelTerpilih() {
         statusDiv.innerHTML = `<p class="error">${error.message}</p>`;
     } finally {
         button.disabled = false;
+        button.style.cursor = 'pointer'; // Kembalikan cursor seperti semula
     }
 }
+
+async function updateWeights() {
+    const pasaran = document.getElementById('pasaran-train').value;
+    if (!confirm(`Anda yakin ingin menjalankan pembelajaran adaptif untuk ${pasaran}? Ini akan menganalisis data historis dan memperbarui bobot prediksi.`)) return;
+
+    const statusDiv = document.getElementById('training-status');
+    const button = document.getElementById('update-weights-button');
+    const progressDiv = document.getElementById('training-progress-indicator');
+    const progressText = document.getElementById('training-progress-text');
+    const progressBar = document.getElementById('training-progress-bar');
+
+    button.disabled = true;
+    statusDiv.innerHTML = '';
+    progressDiv.style.display = 'block';
+    progressText.textContent = 'Memulai proses di server...';
+    progressBar.style.width = '0%';
+
+    try {
+        const startResult = await callApi('/update-weights', 'POST', { pasaran });
+        const { job_id } = startResult;
+
+        const intervalId = setInterval(async () => {
+            try {
+                const jobStatus = await callApi(`/update-weights-status/${job_id}`, 'GET');
+
+                progressText.textContent = jobStatus.message || 'Memproses...';
+                progressBar.style.width = `${jobStatus.progress || 0}%`;
+
+                if (jobStatus.status === 'complete' || jobStatus.status === 'error') {
+                    clearInterval(intervalId);
+                    button.disabled = false;
+                    progressDiv.style.display = 'none';
+
+                    if (jobStatus.status === 'complete') {
+                        statusDiv.innerHTML = `<p style="color: blue; font-weight: bold;">${jobStatus.message}</p>`;
+                    } else {
+                        throw new Error(jobStatus.message);
+                    }
+                }
+            } catch (pollError) {
+                clearInterval(intervalId);
+                button.disabled = false;
+                progressDiv.style.display = 'none';
+                const errorMessage = pollError instanceof Error ? pollError.message : String(pollError);
+                statusDiv.innerHTML = `<p class="error">Gagal memeriksa status: ${errorMessage}</p>`;
+            }
+        }, 2000);
+
+    } catch (startError) {
+        progressDiv.style.display = 'none';
+        statusDiv.innerHTML = `<p class="error">${startError.message}</p>`;
+        button.disabled = false;
+    }
+}
+
+
+function renderEvaluationResults(jobStatus) {
+    const hasilDiv = document.getElementById('hasil-evaluasi');
+    const { summary, daily_details, confusion_matrix } = jobStatus;
+
+    // 1. Ringkasan Akurasi
+    let summaryHtml = `
+        <h4>Ringkasan Akurasi</h4>
+        <div class="table-container">
+            <table>
+                <thead>
+                    <tr>
+                        <th>INDIKATOR</th>
+                        <th>AKURASI</th>
+                        <th>HIT</th>
+                        <th>MISS</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>Colok Bebas (CB)</td>
+                        <td>${summary.cb.accuracy.toFixed(2)}%</td>
+                        <td>${summary.cb.hit}</td>
+                        <td>${summary.cb.miss}</td>
+                    </tr>
+                    <tr>
+                        <td>Presisi AM (≥1 Angka)</td>
+                        <td>${summary.am.accuracy.toFixed(2)}%</td>
+                        <td>${summary.am.hit}</td>
+                        <td>${summary.am.miss}</td>
+                    </tr>
+                    <tr>
+                        <td>Akurasi As (A)</td>
+                        <td>${summary.as.accuracy.toFixed(2)}%</td>
+                        <td>${summary.as.hit}</td>
+                        <td>${summary.as.miss}</td>
+                    </tr>
+                     <tr>
+                        <td>Akurasi Kop (C)</td>
+                        <td>${summary.kop.accuracy.toFixed(2)}%</td>
+                        <td>${summary.kop.hit}</td>
+                        <td>${summary.kop.miss}</td>
+                    </tr>
+                     <tr>
+                        <td>Akurasi Kepala (K)</td>
+                        <td>${summary.kepala.accuracy.toFixed(2)}%</td>
+                        <td>${summary.kepala.hit}</td>
+                        <td>${summary.kepala.miss}</td>
+                    </tr>
+                     <tr>
+                        <td>Akurasi Ekor (E)</td>
+                        <td>${summary.ekor.accuracy.toFixed(2)}%</td>
+                        <td>${summary.ekor.hit}</td>
+                        <td>${summary.ekor.miss}</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>`;
+
+    // 2. Matriks Konfusi
+    let matrixHtml = `
+        <h4 style="margin-top: 30px;">Matriks Konfusi (Prediksi CB)</h4>
+        <div class="table-container">
+            <table>
+                <thead>
+                    <tr>
+                        <th rowspan="2" style="vertical-align: middle;">AKTUAL</th>
+                        <th colspan="10">PREDIKSI</th>
+                    </tr>
+                    <tr>
+                        ${Array.from(Array(10).keys()).map(i => `<th>${i}</th>`).join('')}
+                    </tr>
+                </thead>
+                <tbody>`;
+    
+    confusion_matrix.forEach((row, i) => {
+        matrixHtml += `<tr><th>${i}</th>`;
+        row.forEach((cell, j) => {
+            const style = i === j ? 'background-color: #d5f5e3; color: #1e8449; font-weight: bold;' : '';
+            matrixHtml += `<td style="${style}">${cell}</td>`;
+        });
+        matrixHtml += `</tr>`;
+    });
+    matrixHtml += `</tbody></table></div>`;
+
+    // 3. Detail Evaluasi Per Hari
+    let detailsHtml = `
+        <h4 style="margin-top: 30px;">Detail Evaluasi Per Hari</h4>
+        <div class="table-container">
+            <table>
+                <thead>
+                    <tr>
+                        <th rowspan="2" style="vertical-align: middle;">TANGGAL</th>
+                        <th rowspan="2" style="vertical-align: middle;">HASIL</th>
+                        <th colspan="2">COLOK BEBAS</th>
+                        <th rowspan="2" style="vertical-align: middle;">ANGKA MAIN</th>
+                        <th rowspan="2" style="vertical-align: middle;">PREDIKSI POSISI (KANDIDAT)</th>
+                        <th rowspan="2" style="vertical-align: middle;">STATUS</th>
+                    </tr>
+                    <tr>
+                        <th>PREDIKSI</th>
+                        <th>STATUS</th>
+                    </tr>
+                </thead>
+                <tbody>`;
+
+    daily_details.forEach(day => {
+        const cbStatusStyle = day.cb_status === 'Hit' ? 'color: green; font-weight: bold;' : 'color: red;';
+        const finalStatusStyle = day.final_status === 'Miss' ? 'color: red;' : 'color: green; font-weight: bold;';
+        
+        const hitStyle = 'color: red; font-weight: bold;';
+        const actualDigitsSet = new Set(day.hasil.split(''));
+
+        const cbHtml = actualDigitsSet.has(String(day.pred_cb)) 
+            ? `<span style="${hitStyle}">${day.pred_cb}</span>` 
+            : day.pred_cb;
+
+        const amHtml = day.pred_am.map(num => 
+            actualDigitsSet.has(String(num)) 
+                ? `<span style="${hitStyle}">${num}</span>` 
+                : num
+        ).join(', ');
+
+        const actualPosDigits = {
+            A: day.hasil[0],
+            C: day.hasil[1],
+            K: day.hasil[2],
+            E: day.hasil[3]
+        };
+        
+        const posHtml = day.pos_kandidat.split(' ').map(part => {
+            const [label, numbersStr] = part.split(':');
+            if (!numbersStr) return part;
+
+            const actualForPos = actualPosDigits[label];
+            const highlightedNumbers = numbersStr.split(',').map(num =>
+                num === actualForPos ? `<span style="${hitStyle}">${num}</span>` : num
+            ).join(',');
+            
+            return `${label}: ${highlightedNumbers}`;
+        }).join('&nbsp;&nbsp;'); 
+        
+        detailsHtml += `
+            <tr>
+                <td>${day.tanggal}</td>
+                <td>${day.hasil}</td>
+                <td>${cbHtml}</td>
+                <td style="${cbStatusStyle}">${day.cb_status}</td>
+                <td>${amHtml}</td>
+                <td>${posHtml}</td>
+                <td style="${finalStatusStyle}">${day.final_status}</td>
+            </tr>`;
+    });
+    detailsHtml += `</tbody></table></div>`;
+
+    hasilDiv.innerHTML = summaryHtml + matrixHtml + detailsHtml;
+}
+
 
 async function evalKinerja() {
     const pasaran = document.getElementById('pasaran-eval').value;
     const tgl_awal = document.getElementById('tgl-awal').value;
     const tgl_akhir = document.getElementById('tgl-akhir').value;
     const hasilDiv = document.getElementById('hasil-evaluasi');
+    const progressDiv = document.getElementById('eval-progress-indicator');
+    const progressText = document.getElementById('eval-progress-text');
+    const progressBar = document.getElementById('eval-progress-bar');
     const button = document.querySelector('button[onclick="evalKinerja()"]');
 
     if (!tgl_awal || !tgl_akhir) {
@@ -114,107 +366,49 @@ async function evalKinerja() {
     }
 
     button.disabled = true;
-    hasilDiv.innerHTML = `<div class="spinner"></div><p>Memproses evaluasi...</p>`;
+    hasilDiv.innerHTML = '';
+    progressDiv.style.display = 'block';
+    progressText.textContent = 'Memulai proses evaluasi di server...';
+    progressBar.style.width = '0%';
 
     try {
-        const result = await callApi('/evaluate', 'POST', { pasaran, tgl_awal, tgl_akhir });
-        const summaryHTML = renderSummary(result.summary);
-        // Pastikan confusion_matrix ada sebelum dirender
-        const matrixHTML = result.confusion_matrix ? renderConfusionMatrix(result.confusion_matrix) : '';
-        // Cek jika daily_details ada dan tidak kosong
-        const detailsHTML = result.daily_details && result.daily_details.length > 0 ? renderDetails(result.daily_details) : '';
-        
-        let finalHTML = `<h4>Ringkasan Akurasi</h4>${summaryHTML}`;
-        if (matrixHTML) {
-            finalHTML += `<h4 style="margin-top:30px;">Matriks Konfusi</h4>${matrixHTML}`;
-        }
-        if (detailsHTML) {
-            finalHTML += `<h4 style="margin-top:30px;">Detail Per Hari</h4>${detailsHTML}`;
-        }
-        hasilDiv.innerHTML = finalHTML;
+        const startResult = await callApi('/evaluate', 'POST', { pasaran, tgl_awal, tgl_akhir });
+        const { job_id } = startResult;
 
-    } catch (error) {
-        hasilDiv.innerHTML = `<p class="error">${error.message}</p>`;
-    } finally {
+        const intervalId = setInterval(async () => {
+            try {
+                const jobStatus = await callApi(`/evaluate-status/${job_id}`, 'GET');
+
+                progressText.textContent = jobStatus.message || 'Memproses...';
+                progressBar.style.width = `${jobStatus.progress || 0}%`;
+
+                if (jobStatus.status === 'complete' || jobStatus.status === 'error') {
+                    clearInterval(intervalId);
+                    button.disabled = false;
+                    progressDiv.style.display = 'none';
+
+                    if (jobStatus.status === 'complete') {
+                        renderEvaluationResults(jobStatus);
+                    } else {
+                        throw new Error(jobStatus.message);
+                    }
+                }
+            } catch (pollError) {
+                clearInterval(intervalId);
+                button.disabled = false;
+                progressDiv.style.display = 'none';
+                const errorMessage = pollError instanceof Error ? pollError.message : String(pollError);
+                hasilDiv.innerHTML = `<p class="error">Gagal memeriksa status: ${errorMessage}</p>`;
+            }
+        }, 2000);
+
+    } catch (startError) {
+        progressDiv.style.display = 'none';
+        hasilDiv.innerHTML = `<p class="error">${startError.message}</p>`;
         button.disabled = false;
     }
 }
 
-function renderSummary(summary) {
-    const renderRow = (label, data) => `
-        <tr>
-            <td>${label}</td>
-            <td><strong>${(data.accuracy * 100).toFixed(2)}%</strong></td>
-            <td>${data.hit}</td>
-            <td>${data.miss}</td>
-        </tr>`;
-    return `<div class="table-container"><table>
-        <thead><tr><th>Indikator</th><th>Akurasi</th><th>Hit</th><th>Miss</th></tr></thead>
-        <tbody>
-            ${renderRow('Colok Bebas (CB)', summary.cb)}
-            ${renderRow('Presisi AM (≥1 Angka)', summary.am)}
-            ${renderRow('Akurasi Kop (C)', summary.kop)}
-            ${renderRow('Akurasi Kepala (K)', summary.kepala)}
-            ${renderRow('Akurasi Ekor (E)', summary.ekor)}
-        </tbody>
-    </table></div>`;
-}
-
-function renderConfusionMatrix(matrix) {
-    let table = '<div class="table-container"><table><thead><tr><th>Aktual \\ Prediksi</th>';
-    for(let i=0; i<10; i++) table += `<th>${i}</th>`;
-    table += '</tr></thead><tbody>';
-    for(let i=0; i<10; i++) {
-        table += `<tr><td><strong>${i}</strong></td>`;
-        for(let j=0; j<10; j++) {
-            table += `<td class="${i===j ? 'cell-correct' : ''}">${matrix[i][j]}</td>`;
-        }
-        table += '</tr>';
-    }
-    table += '</tbody></table></div>';
-    return table;
-}
-
-function renderDetails(details) {
-    let table = '<div class="table-container"><table><thead><tr><th>Tanggal</th><th>Hasil</th><th>CB</th><th>Status</th><th>Angka Main</th><th>Prediksi Posisi</th><th>Status</th></tr></thead><tbody>';
-    details.forEach(d => {
-        const actualKop = parseInt(d.hasil[1]);
-        const actualKepala = parseInt(d.hasil[2]);
-        const actualEkor = parseInt(d.hasil[3]);
-
-        const predPosisiParts = d.pred_posisi.split(' '); // Contoh: ["C:1,2,3", "K:4,5,6", "E:7,8,9"]
-        
-        let formattedPredPosisi = '';
-        predPosisiParts.forEach(part => {
-            const [posLabel, predNumsStr] = part.split(':'); // Contoh: "C", "1,2,3"
-            const predNums = predNumsStr.split(',').map(Number); // Contoh: [1,2,3]
-            
-            let highlightedNums = predNums.map(num => {
-                let isHit = false;
-                if (posLabel === 'C' && num === actualKop) isHit = true;
-                if (posLabel === 'K' && num === actualKepala) isHit = true;
-                if (posLabel === 'E' && num === actualEkor) isHit = true;
-                
-                return isHit ? `<span class="am-hit">${num}</span>` : num;
-            }).join(',');
-            formattedPredPosisi += `${posLabel}:${highlightedNums} `;
-        });
-
-        const am_highlighted = d.pred_am.map(num => d.am_found.includes(num) ? `<span class="am-hit">${num}</span>` : num).join(', ');
-        table += `
-            <tr>
-                <td>${d.tanggal}</td>
-                <td><strong>${d.hasil}</strong></td>
-                <td>${d.pred_cb}</td>
-                <td class="${d.cb_status.toLowerCase()}">${d.cb_status}</td>
-                <td>${am_highlighted}</td>
-                <td style="font-size:0.9em;">${formattedPredPosisi.trim()}</td>
-                <td class="${d.posisi_status === 'Miss' ? 'miss' : 'hit'}">${d.posisi_status}</td>
-            </tr>`;
-    });
-    table += '</tbody></table></div>';
-    return table;
-}
 
 async function tampilkanInfoUpdateData() {
     const infoDiv = document.getElementById("data-update-info");
@@ -224,7 +418,30 @@ async function tampilkanInfoUpdateData() {
         const result = await callApi(`/get-last-update?pasaran=${pasaran}`, 'GET');
         infoDiv.textContent = `Data historis diperbarui s/d: ${result.last_update}`;
     } catch (error) {
-        infoDiv.textContent = 'Gagal memuat info tanggal data.';
+        infoDiv.textContent = `Gagal memuat info tanggal data: ${error.message}`;
         console.error("Gagal memuat info update data:", error);
+    }
+}
+
+function openTab(evt, tabName) {
+    let i, tabcontent, tablinks;
+    tabcontent = document.getElementsByClassName("tab-content");
+    for (i = 0; i < tabcontent.length; i++) {
+        tabcontent[i].style.display = "none";
+    }
+    tablinks = document.getElementsByClassName("tab-button");
+    for (i = 0; i < tablinks.length; i++) {
+        tablinks[i].className = tablinks[i].className.replace(" active", "");
+    }
+    document.getElementById(tabName).style.display = "block";
+    evt.currentTarget.className += " active";
+}
+
+function toggleTuningGuide() {
+    const content = document.getElementById('tuning-guide-content');
+    if (content.style.display === 'none' || content.style.display === '') {
+        content.style.display = 'block';
+    } else {
+        content.style.display = 'none';
     }
 }

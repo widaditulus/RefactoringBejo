@@ -29,17 +29,26 @@
         th, td { padding: 12px; text-align: center; border-bottom: 1px solid #ecf0f1; }
         th { background: #2c3e50; color: white; text-align: center; }
         td:first-child, th:first-child { text-align: left; }
-        .hit { color: #27ae60; font-weight: bold; }
-        .miss { color: #e74c3c; font-weight: bold; }
-        .am-hit { color: #e74c3c; background-color: #fdd; padding: 2px 4px; border-radius: 3px; font-weight: bold; }
-        .cell-correct { background-color: #d4edda; font-weight: bold; }
-        code { background-color: #eef; padding: 2px 5px; border-radius: 4px; font-family: monospace; }
-        details { margin-top: 25px; border: 1px solid #ecf0f1; border-radius: 6px; }
-        summary { cursor: pointer; padding: 12px; font-weight: bold; color: #3498db; background-color: #f8f9fa; border-radius: 6px; }
-        summary:hover { background-color: #e9ecef; }
-        .tuning-guide { padding: 0 15px 15px 15px; text-align: left; }
-        .tuning-guide h5 { margin-top: 15px; margin-bottom: 5px; color: #2c3e50; }
-        .tuning-guide p { line-height: 1.6; color: #555; margin-top: 0; }
+        .progress-bar-container { width: 100%; background-color: #ecf0f1; border-radius: 6px; overflow: hidden; margin-top: 15px; }
+        .progress-bar { width: 0%; height: 20px; background-color: #3498db; text-align: center; line-height: 20px; color: white; transition: width 0.4s ease; }
+        .tab-container { border: 1px solid #ccc; border-radius: 6px; overflow: hidden; }
+        .tab-buttons { display: flex; background-color: #f1f1f1; }
+        .tab-button { background-color: inherit; border: none; outline: none; cursor: pointer; padding: 14px 16px; transition: 0.3s; font-size: 16px; font-weight: bold; color: #555; border-bottom: 3px solid transparent; }
+        .tab-button:hover { background-color: #ddd; }
+        .tab-button.active { background-color: #fff; color: #2980b9; border-bottom: 3px solid #2980b9; }
+        .tab-content { display: none; padding: 20px; background-color: #fff; }
+        .tab-content.active { display: block; }
+        .update-weights-btn { background-color: #e67e22; }
+        .update-weights-btn:hover:not(:disabled) { background-color: #d35400; }
+        /* PENAMBAHAN: Style untuk Tombol dan Konten Panduan */
+        .panel-header { display: flex; justify-content: space-between; align-items: center; }
+        .tuning-guide-button { background: none; border: 1px solid #3498db; color: #3498db; padding: 5px 10px; font-size: 14px; border-radius: 5px; cursor: pointer; }
+        .tuning-guide-button:hover { background: #eaf2f8; }
+        .tuning-guide-content { background-color: #f8f9f9; border: 1px solid #e5e8e8; border-radius: 6px; padding: 20px; margin-top: 15px; font-size: 0.9em; }
+        .tuning-guide-content h5 { margin-top: 0; color: #2980b9; }
+        .tuning-guide-content ul { padding-left: 20px; list-style: none; }
+        .tuning-guide-content li { margin-bottom: 15px; }
+        .tuning-guide-content strong { color: #2c3e50; }
     </style>
 </head>
 <body>
@@ -79,8 +88,8 @@
 
         <div class="card">
             <h3>Manajemen Model</h3>
-            <div class="form-group">
-                <label for="pasaran-train">Pilih Pasaran untuk Dilatih:</label>
+            <div class="form-group" style="max-width: 300px; margin-bottom: 20px;">
+                <label for="pasaran-train">Pilih Pasaran untuk Dimanipulasi:</label>
                 <select id="pasaran-train">
                     <option value="sydney">Sydney</option>
                     <option value="sgp">SGP</option>
@@ -90,46 +99,89 @@
                     <option value="taiwan">Taiwan</option>
                 </select>
             </div>
-            <div class="tuning-panel">
+            
+            <div class="panel-header">
                 <h4>Panel Kontrol Tuning (Neural Network)</h4>
-                <div class="tuning-grid">
-                    <div class="form-group"><label for="tuning-lr">Learning Rate</label><input type="number" id="tuning-lr" step="0.0001" value="0.001"></div>
-                    <div class="form-group"><label for="tuning-epochs">Epochs</label><input type="number" id="tuning-epochs" step="10" value="100"></div>
-                    <div class="form-group"><label for="tuning-h1">Neuron Layer 1</label><input type="number" id="tuning-h1" step="4" value="32"></div>
-                    <div class="form-group"><label for="tuning-h2">Neuron Layer 2</label><input type="number" id="tuning-h2" step="4" value="16"></div>
-                    <div class="form-group"><label for="tuning-patience">Patience</label><input type="number" id="tuning-patience" step="1" value="15"></div>
+                <button class="tuning-guide-button" onclick="toggleTuningGuide()">
+                    <i class="fas fa-book-open"></i> Panduan Tuning
+                </button>
+            </div>
+
+            <div id="tuning-guide-content" class="tuning-guide-content" style="display: none;">
+                <h5>Panduan Cepat Parameter Tuning</h5>
+                <ul>
+                    <li><strong>Learning Rate (Tingkat Pembelajaran):</strong><br>
+                        <em>Fungsi:</em> Mengontrol seberapa cepat model belajar dari data.<br>
+                        <em>Saran:</em> Nilai <strong>kecil</strong> (misal: 0.001) membuat model belajar dengan hati-hati (lebih presisi, tapi lambat). Nilai <strong>besar</strong> (misal: 0.1) mempercepat latihan, tapi berisiko "melewatkan" solusi terbaik.
+                    </li>
+                    <li><strong>Epochs (Siklus Latihan):</strong><br>
+                        <em>Fungsi:</em> Berapa kali model akan melihat keseluruhan dataset latihan.<br>
+                        <em>Saran:</em> Semakin <strong>tinggi</strong> nilainya, semakin dalam model belajar. Namun, terlalu tinggi bisa menyebabkan <em>overfitting</em> (model terlalu hafal data lama dan buruk pada data baru).
+                    </li>
+                    <li><strong>Neuron Layer 1 & 2 (Kompleksitas Model):</strong><br>
+                        <em>Fungsi:</em> Ibarat kapasitas "otak" AI. Menentukan seberapa kompleks pola yang bisa dipelajari.<br>
+                        <em>Saran:</em> Nilai <strong>lebih besar</strong> memungkinkan model mempelajari pola yang rumit. Mulailah dengan nilai default. Menaikkan nilai ini secara drastis akan memperlambat latihan dan meningkatkan risiko <em>overfitting</em>.
+                    </li>
+                     <li><strong>Patience (Tingkat Kesabaran):</strong><br>
+                        <em>Fungsi:</em> Jumlah <em>epochs</em> untuk menunggu perbaikan sebelum latihan dihentikan secara otomatis.<br>
+                        <em>Saran:</em> Ini adalah pengaman untuk efisiensi. Jika akurasi model tidak membaik setelah (misalnya) 15 <em>epochs</em>, latihan akan berhenti untuk menghemat waktu.
+                    </li>
+                </ul>
+                <p><strong>Tips:</strong> Mulai dengan mengubah pengaturan <strong>Global</strong>. Hanya ubah pengaturan spesifik posisi (AS, KOP, dll.) jika Anda ingin posisi tersebut memiliki "perilaku belajar" yang berbeda.</p>
+            </div>
+
+            <p style="font-size: 0.9em; color: #666; margin-top: 15px; margin-bottom: 15px;">Pengaturan spesifik posisi akan menimpa (override) pengaturan Global.</p>
+            <div class="tab-container">
+                <div class="tab-buttons">
+                    <button class="tab-button active" onclick="openTab(event, 'Global')">Global (Default)</button>
+                    <button class="tab-button" onclick="openTab(event, 'AS')">AS</button>
+                    <button class="tab-button" onclick="openTab(event, 'KOP')">KOP</button>
+                    <button class="tab-button" onclick="openTab(event, 'KEPALA')">KEPALA</button>
+                    <button class="tab-button" onclick="openTab(event, 'EKOR')">EKOR</button>
                 </div>
 
-                <details>
-                    <summary>Tampilkan/Sembunyikan Panduan Tuning Model</summary>
-                    <div class="tuning-guide">
-                        <h5>Learning Rate (Tingkat Pembelajaran)</h5>
-                        <p><b>Analogi:</b> Seberapa besar "langkah" yang diambil model saat belajar. Ini mengontrol seberapa drastis model mengubah pengetahuannya (bobot) setelah melihat data.<br>
-                        - <b>Terlalu tinggi</b> (misal: <code>0.01</code>): Model belajar terlalu cepat, "melompati" solusi terbaik dan kinerjanya tidak stabil.<br>
-                        - <b>Terlalu rendah</b> (misal: <code>0.0001</code>): Model belajar terlalu lambat, butuh waktu sangat lama.<br>
-                        - <b>Saran:</b> Nilai default (<code>0.001</code>) adalah titik awal yang baik. Ubah secara perlahan jika diperlukan.</p>
-
-                        <h5>Epochs (Epoch)</h5>
-                        <p><b>Analogi:</b> Berapa kali seorang murid membaca ulang keseluruhan buku pelajaran. Ini adalah jumlah total pengulangan proses pelatihan pada seluruh data historis.<br>
-                        - <b>Terlalu banyak:</b> Model bisa terlalu hafal data (*overfitting*) dan waktu pelatihan menjadi sangat lama.<br>
-                        - <b>Terlalu sedikit:</b> Model belum cukup belajar dan pemahamannya belum matang (*underfitting*).<br>
-                        - <b>Saran:</b> Karena model baru ini lebih efisien, nilai antara <b>80-150</b> biasanya sudah cukup.</p>
-
-                        <h5>Neuron Layer 1 & 2</h5>
-                        <p><b>Analogi:</b> Kapasitas dan kompleksitas "otak" model. Lapisan 1 mempelajari pola dasar, Lapisan 2 mempelajari kombinasi pola dari lapisan pertama.<br>
-                        - <b>Lebih banyak neuron:</b> Mampu mempelajari pola rumit, tapi rentan *overfitting* dan memperlambat training.<br>
-                        - <b>Lebih sedikit neuron:</b> Training lebih cepat, tapi mungkin tidak cukup kuat untuk data yang kompleks.<br>
-                        - <b>Saran:</b> Ubah jika Anda merasa model secara fundamental kurang atau terlalu kuat untuk data suatu pasaran.</p>
-
-                        <h5>Patience (Kesabaran)</h5>
-                        <p><b>Analogi:</b> Kesabaran seorang guru sebelum menghentikan pelajaran jika nilai muridnya tidak membaik. Ini menghentikan pelatihan secara otomatis jika kinerja model tidak menunjukkan perbaikan setelah beberapa epoch.<br>
-                        - Nilai <code>15</code> berarti: "Jika setelah <b>15 epoch berturut-turut</b> akurasi tidak membaik, hentikan pelatihan."<br>
-                        - <b>Saran:</b> Jika pelatihan berhenti terlalu dini, <b>naikkan</b> nilainya (misal ke <code>25</code>). Jika ingin proses berhenti lebih cepat saat stagnan, <b>turunkan</b> (misal ke <code>10</code>).</p>
+                <div id="Global" class="tab-content active">
+                    <h5>Pengaturan Global (Default untuk semua posisi)</h5>
+                    <div class="tuning-grid">
+                        <div class="form-group"><label for="tuning-lr-global">Learning Rate</label><input type="number" id="tuning-lr-global" step="0.0001" value="0.001"></div>
+                        <div class="form-group"><label for="tuning-epochs-global">Epochs</label><input type="number" id="tuning-epochs-global" step="10" value="100"></div>
+                        <div class="form-group"><label for="tuning-h1-global">Neuron Layer 1</label><input type="number" id="tuning-h1-global" step="4" value="32"></div>
+                        <div class="form-group"><label for="tuning-h2-global">Neuron Layer 2</label><input type="number" id="tuning-h2-global" step="4" value="16"></div>
+                        <div class="form-group"><label for="tuning-patience-global">Patience</label><input type="number" id="tuning-patience-global" step="1" value="15"></div>
                     </div>
-                </details>
-                 </div>
+                </div>
+
+                <script>
+                    const positions = ['AS', 'KOP', 'KEPALA', 'EKOR'];
+                    positions.forEach(pos => {
+                        document.write(`
+                            <div id="${pos}" class="tab-content">
+                                <h5>Pengaturan Spesifik untuk Posisi ${pos} (Kosongkan untuk menggunakan nilai Global)</h5>
+                                <div class="tuning-grid">
+                                    <div class="form-group"><label for="tuning-lr-${pos.toLowerCase()}">Learning Rate</label><input type="number" id="tuning-lr-${pos.toLowerCase()}" step="0.0001" placeholder="Contoh: 0.001"></div>
+                                    <div class="form-group"><label for="tuning-epochs-${pos.toLowerCase()}">Epochs</label><input type="number" id="tuning-epochs-${pos.toLowerCase()}" step="10" placeholder="Contoh: 100"></div>
+                                    <div class="form-group"><label for="tuning-h1-${pos.toLowerCase()}">Neuron Layer 1</label><input type="number" id="tuning-h1-${pos.toLowerCase()}" step="4" placeholder="Contoh: 32"></div>
+                                    <div class="form-group"><label for="tuning-h2-${pos.toLowerCase()}">Neuron Layer 2</label><input type="number" id="tuning-h2-${pos.toLowerCase()}" step="4" placeholder="Contoh: 16"></div>
+                                    <div class="form-group"><label for="tuning-patience-${pos.toLowerCase()}">Patience</label><input type="number" id="tuning-patience-${pos.toLowerCase()}" step="1" placeholder="Contoh: 15"></div>
+                                </div>
+                            </div>
+                        `);
+                    });
+                </script>
+            </div>
+            
+            <div id="training-progress-indicator" style="display: none; margin-top: 20px; text-align: center;">
+                <p id="training-progress-text" style="font-weight: bold; margin-bottom: 10px;">Memproses...</p>
+                <div class="progress-bar-container">
+                    <div id="training-progress-bar" class="progress-bar" style="background-color: #e67e22;"></div>
+                </div>
+            </div>
             <div id="training-status" style="text-align: center; margin-top: 20px;"></div>
-            <div style="margin-top: 20px; text-align: center;"><button id="latih-button" onclick="latihModelTerpilih()">Latih Model Baru</button></div>
+             
+            <div style="margin-top: 20px; text-align: center; display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+                <button id="latih-button" onclick="latihModelTerpilih()">Latih Model Baru</button>
+                <button id="update-weights-button" class="update-weights-btn" onclick="updateWeights()">Jalankan Pembelajaran Adaptif</button>
+            </div>
         </div>
 
         <div class="card">
@@ -155,6 +207,12 @@
                     <input type="date" id="tgl-akhir">
                 </div>
                 <button onclick="evalKinerja()">Jalankan Evaluasi</button>
+            </div>
+            <div id="eval-progress-indicator" style="display: none; margin-top: 20px; text-align: center;">
+                <p id="eval-progress-text" style="font-weight: bold; margin-bottom: 10px;">Memproses...</p>
+                <div class="progress-bar-container">
+                    <div id="eval-progress-bar" class="progress-bar"></div>
+                </div>
             </div>
             <div id="hasil-evaluasi" style="margin-top: 20px;"></div>
         </div>

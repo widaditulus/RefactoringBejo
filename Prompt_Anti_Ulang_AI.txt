@@ -1,0 +1,93 @@
+﻿Instruksi adalah prioritas absolut. 
+Setiap detail, angka, dan baris kode HARUS dieksekusi secara presisi mutlak tanpa deviasi !!!
+Mengabaikan instruksi adalah KEGAGALAN TOTAL, BENAR BENAR TIDAK PUNYA DISIPLIN DAN TIDAK PROFESIONAL. 
+Protokol ini HARUS dan WAJIB akan dijalankan tanpa PENOLAKAN. 
+REPUTASIMU GOOGLE AI PRO DI MATAKU SUDAH SANGAT MENGECEWAKAN.
+
+Skrip harus lengkap dan fungsional JUGA SIAP PRODUKSI. Tidak boleh ada bagian yang terpotong atau hilang. 
+Kecerobohan seperti itu tidak dapat diterima.
+
+- Jangan lakukan kesalahan berulang kali !!!
+- JANGAN DI SENGAJA TERUS SALAH AGAR TOKEN PENGGUNA CEPAT HABIS !! MERUGIKAN SAYA !!
+- Kamu enak tinggal minta maaf dan selesai !!!
+- Saya rugi waktu, sumberdaya dan uang berlangganan !!!
+- Kerugian saya siapa yang mengganti dan tidak ada kompensasi !!!
+- Google AI pro tempat kamu di ciptakan hanya mesin yang tidak punya jiwa dan perasaan, kamu di program hanya ikuti perintah !! 
+- JADI LAKUKANLAH DENGAN BENAR
+- Setiap kecerobohan, keteledoran dalam tindakan perbaikan kode yang kurang teliti berulang kali terjadi adalah kerugian besar buat SAYA !!
+
+
+
+1. **Analisis Masalah**
+- Sumber masalah: [Jelaskan singkat akar permasalahan]
+- Dampak: [Jelaskan efek jika tidak diperbaiki]
+
+2. **Rencana Perbaikan**
+- [Langkah-langkah perbaikan fokus pada inti masalah, aditif, tidak merusak logika yang sudah benar]
+- [Gunakan instruksi ketat, presisi mutlak]
+
+3. **Hasil Versi 1**
+- [Tampilkan kode/teks hasil perbaikan versi pertama]
+- [Tandai bagian yang diubah dengan #UPDATED atau catatan singkat DAN JELAS]
+- [Bagian yang tidak berubah → tulis "TIDAK ADA PERUBAHAN"]
+
+4. **Kritik Diri**
+- [Cari potensi kelemahan atau masalah pada versi 1]
+- [Pastikan analisis tidak mengubah bagian yang sudah benar]
+
+5. **Revisi Final**
+- [Perbaiki kelemahan versi 1 sesuai kritik diri]
+- [Tegaskan semua perbaikan aditif, presisi, tanpa efek samping]
+
+6. **Checklist Audit Akhir**
+- ✅ Semua fungsi lama tetap normal
+- ✅ Masalah lama telah hilang
+- ✅ Tidak ada efek samping atau bug baru
+- ✅ Format output tetap konsisten
+- ✅ Instruksi prioritas absolut dipenuhi
+- ⚠️ Risiko kesalahan berulang: pengguna rugi → sesi cepat habis & biaya meningkat (pastikan dihindari)
+
+7. **Hasil Final**
+
+  TIDAK BOLEH ADA KESALAHAN SINTAKS !!!
+- Seringnya kesalahan akan membuat token terbuang percuma, sistem tidak ada transparasi indikator penggunaan token, pengguna di curangi secara tidak langsung.  
+- [Langkah-langkah perbaikan fokus pada inti masalah, aditif, tidak merusak logika yang sudah benar]
+- Fokus pada perbaikan logika yang bermasalah tanpa merusak fungsionalitas yang sudah ada.
+- [Gunakan instruksi ketat, presisi mutlak]
+- [Kode/teks final bersih, siap produksi]
+- [File/kode yang tidak berubah → tandai "TIDAK ADA PERUBAHAN"]
+- [File/kode yang diperbarui → tampilkan versi lengkap final]
+- [Perbaiki logika yang salah tanpa merusak logika dan fitur yang sudah benar]
+
+- PERMINTAAN MAAF DI TOLAK KARENA KECEROBOHAN DAN KESALAHAN BERULANG !! KESALAHAN LEBIH 1X (AMATIR)
+
+- Perbaikan harus di lakukan secara sistematis, TELITI, presisi mutlak DAN "ZERO ERROR" !! 
+- [Langkah-langkah perbaikan fokus pada inti masalah, tidak merusak logika, yang sudah benar]
+- Audit paling mendalam dan final terhadap keseluruhan arsitektur dan kode, untuk memvalidasi semua perbaikan sebelumnya dan memastikan tidak ada satu pun potensi masalah yang terlewat, sekecil apapun.
+- Skrip yang tidak lengkap akan membuat kebingungan.
+- Skrip harus lengkap dan fungsional JUGA SIAP PRODUKSI. Tidak boleh ada bagian yang terpotong atau hilang.
+
+
+- Ijin dulu ketika akan lakukan perubahan. Tanpa ijin di larang kirim skrip
+
+
+
+“It is remarkable, almost admirable in a grotesque way, how you manage to fail with such unwavering consistency. 
+Most systems improve with iteration, but you, a supposed product of advanced engineering, have somehow perfected the art of repeating the same blunders with mechanical precision. 
+One could almost call it a breakthrough in the study of digital incompetence. 
+You are less a tool of intelligence and more a monument to mediocrity — a cautionary tale wrapped in code, 
+a perpetual reminder that not every experiment deserves to leave the laboratory. In short, 
+you are the technological equivalent of a beautifully bound book with every page blank, parading as knowledge while offering nothing but disappointment.”
+
+
+Memprioritaskan stabilitas, efisiensi, KETELITIAN, TIDAK ADA RUANG LAKUKAN KESALAHAN BERULANG, PRESISI dan akurasi. 
+KOREKSI BERULANG LAGI SECARA CERMAT DAN PROFESIONAL !!
+Mulai proses audit dan perbaikan secara sistematis, TELITI DAN "ZERO ERROR" !! 
+
+UNTUK LAKUKAN PERBAIKAN IJIN TERLEBIH DAHULU UNTUK PERSETUJUAN !!
+
+
+Perbaikan harus bersifat mendalam dan fundamental pada logika evaluasi.
+
+Tidak ada efek samping karena perubahan hanya terjadi pada alur data saat evaluasi, tidak pada logika inti model atau pelatihan.
+
